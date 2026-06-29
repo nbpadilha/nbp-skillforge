@@ -1,6 +1,6 @@
 {
   "name": "nbp-forge",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Compose portable agent skills (SKILL.md / commands) from reusable bricks, with a drift-gate.",
   "type": "module",
   "bin": { "nbp-forge": "bin/cli.mjs" },
@@ -17,6 +17,6 @@
   "repository": { "type": "git", "url": "git+https://github.com/nbpadilha/nbp-forge.git" },
   "bugs": { "url": "https://github.com/nbpadilha/nbp-forge/issues" },
   "homepage": "https://github.com/nbpadilha/nbp-forge#readme",
-  "engines": { "node": ">=18" },
+  "engines": { "node": ">=18.17.0" },
   "files": ["bin/", "src/", "scripts/", "examples/", "SPEC.md"]
 }

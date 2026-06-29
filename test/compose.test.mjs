@@ -219,6 +219,38 @@ test("conformance: can be disabled via config (conformance:false)", () => {
   } finally { cleanup(root); }
 });
 
+test("build: an include that escapes bricks/ is a build error (nothing written)", () => {
+  const root = makeRoot({
+    bricks: { ok: "fine" },
+    recipes: { x: "---\nname: x\ndescription: d.\n---\n# x\n\n<!-- include: ../../secret -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, false);
+    assert.equal(r.written, 0);
+    assert.ok(r.errors.some((e) => /escapes bricks\//.test(e)));
+    assert.equal(has(outFile(root, "x")), false);
+  } finally { cleanup(root); }
+});
+
+test("build: refuses a config where out == recipes (would overwrite source)", () => {
+  const root = makeRoot({ config: { out: "recipes" }, recipes: { a: "---\nname: a\ndescription: d.\n---\n# a\nbody\n" } });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => /must not be inside or equal to/.test(e)));
+  } finally { cleanup(root); }
+});
+
+test("build: refuses a config where a role dir is NESTED inside another (out under bricks)", () => {
+  const root = makeRoot({ config: { out: "bricks/out" }, recipes: { a: "---\nname: a\ndescription: d.\n---\n# a\nbody\n" } });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => /must not be inside or equal to/.test(e)));
+  } finally { cleanup(root); }
+});
+
 test("check: detects drift when the generated file is hand-edited", () => {
   const root = makeRoot({
     bricks: { b: "canonical body" },

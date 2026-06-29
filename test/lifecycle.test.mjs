@@ -342,6 +342,109 @@ test("import: missing source file fails cleanly", () => {
   } finally { cleanup(root); }
 });
 
+test("lifecycle: new/remove/restore/rename reject unsafe names (traversal/device/separators)", () => {
+  const root = makeRoot({ recipes: { real: "---\nname: real\ndescription: d.\n---\n# real\nbody\n" } });
+  try {
+    for (const bad of ["../evil", "sub/evil", "..", "nul", "a\\b"]) {
+      assert.equal(create(bad, { root }).ok, false, `new ${bad}`);
+      assert.equal(remove(bad, { root }).ok, false, `remove ${bad}`);
+      assert.equal(restore(bad, { root }).ok, false, `restore ${bad}`);
+      assert.equal(rename(bad, "ok", { root }).ok, false, `rename old ${bad}`);
+      assert.equal(rename("real", bad, { root }).ok, false, `rename new ${bad}`);
+    }
+    assert.equal(has(join(root, "evil.md")), false, "nothing escaped the recipes dir");
+  } finally { cleanup(root); }
+});
+
+test("remove: unknown deletePolicy fails closed to soft (archived, not destroyed)", () => {
+  const root = makeRoot({
+    config: { deletePolicy: "archive-typo" },
+    bricks: { solo: "b" },
+    recipes: { x: "---\nname: x\ndescription: d.\n---\n# x\n\n<!-- include: solo -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const r = remove("x", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.policy, "soft", "unknown policy must be treated as soft");
+    assert.equal(has(archived(root, "x", "recipe.md")), true, "recipe archived, not destroyed");
+  } finally { cleanup(root); }
+});
+
+test("gc: a NESTED brick that is used is not a false orphan (separator normalized)", () => {
+  const root = makeRoot({
+    bricks: { "core/run": "x" },
+    recipes: { a: "---\nname: a\ndescription: d.\n---\n# a\n\n<!-- include: core/run -->\n" },
+  });
+  try {
+    assert.deepEqual(gc(root, { apply: false }).orphans, [], "nested brick in use must not be flagged orphan");
+  } finally { cleanup(root); }
+});
+
+test("include with internal `..` canonicalizes to the real brick (builds; no gc false-orphan)", () => {
+  const root = makeRoot({
+    bricks: { foo: "FOO BODY" },
+    recipes: { r: "---\nname: r\ndescription: d.\n---\n# r\n\n<!-- include: sub/../foo -->\n" },
+  });
+  try {
+    const b = run({ root, mode: "build" });
+    assert.equal(b.ok, true, b.errors?.join("; "));
+    assert.match(read(outFile(root, "r")), /FOO BODY/);
+    assert.deepEqual(gc(root, { apply: false }).orphans, [], "foo is used via the normalized include");
+  } finally { cleanup(root); }
+});
+
+test("remove --hard never deletes a brick path that escapes bricks/ (malicious include)", () => {
+  const root = makeRoot({
+    bricks: { real: "b" },
+    recipes: { x: "---\nname: x\ndescription: d.\n---\n# x\n\n<!-- include: ../escapee -->\n" },
+  });
+  write(join(root, "escapee.md"), "PRECIOUS"); // a file OUTSIDE bricks/ that must survive
+  try {
+    remove("x", { root, hard: true });
+    assert.equal(has(join(root, "escapee.md")), true, "remove must not reach outside bricks/");
+    assert.equal(read(join(root, "escapee.md")), "PRECIOUS");
+  } finally { cleanup(root); }
+});
+
+test("gc: a backslash-written nested include is normalized (not a false orphan)", () => {
+  const root = makeRoot({
+    bricks: { "core/run": "x" },
+    recipes: { a: "---\nname: a\ndescription: d.\n---\n# a\n\n<!-- include: core\\run -->\n" },
+  });
+  try {
+    assert.deepEqual(gc(root, { apply: false }).orphans, [], "backslash include must key the same as the brick");
+  } finally { cleanup(root); }
+});
+
+test("remove: refuses to clobber an existing archive entry", () => {
+  const root = makeRoot({
+    bricks: { solo: "b" },
+    recipes: { x: "---\nname: x\ndescription: d.\n---\n# x\n\n<!-- include: solo -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    assert.equal(remove("x", { root }).ok, true);
+    create("x", { root });
+    const r2 = remove("x", { root });
+    assert.equal(r2.ok, false);
+    assert.match(r2.msg, /already archived/);
+  } finally { cleanup(root); }
+});
+
+test("rename: handles a dotted name and a quoted frontmatter name", () => {
+  const root = makeRoot({
+    config: { conformance: false },
+    recipes: { "a.b": `---\nname: "a.b"\ndescription: d.\n---\n# a.b\nbody\n` },
+  });
+  try {
+    const r = rename("a.b", "c", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(has(recipe(root, "c")), true);
+    assert.match(read(recipe(root, "c")), /^name:\s*c\s*$/m, "name: rewritten despite quotes + regex-meta dot");
+  } finally { cleanup(root); }
+});
+
 test("rename: refuses when the target already exists", () => {
   const root = makeRoot({
     recipes: {

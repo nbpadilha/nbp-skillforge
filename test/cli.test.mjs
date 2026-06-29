@@ -18,7 +18,7 @@ test("--version prints `nbp-forge <version>` and exits 0", () => {
 
 test("help exits 0 and lists commands", () => {
   const out = execFileSync(node, [cli, "help"], { encoding: "utf8" });
-  assert.match(out, /usage: forge <command>/);
+  assert.match(out, /usage: nbp-forge <command>/);
   assert.match(out, /install-hooks/);
 });
 
@@ -28,5 +28,25 @@ test("unknown command exits 2", () => {
     assert.fail("should have exited non-zero");
   } catch (e) {
     assert.equal(e.status, 2);
+  }
+});
+
+test("unknown option exits 2", () => {
+  try {
+    execFileSync(node, [cli, "build", "--bogus"], { encoding: "utf8", stdio: "pipe" });
+    assert.fail("should have exited non-zero");
+  } catch (e) {
+    assert.equal(e.status, 2);
+  }
+});
+
+test("missing required positional args exit non-zero (no undefined.md)", () => {
+  for (const args of [["new"], ["rename", "only-one"]]) {
+    try {
+      execFileSync(node, [cli, ...args], { encoding: "utf8", stdio: "pipe" });
+      assert.fail(`'${args.join(" ")}' should have exited non-zero`);
+    } catch (e) {
+      assert.ok(e.status >= 1, `'${args.join(" ")}' exit ${e.status}`);
+    }
   }
 });

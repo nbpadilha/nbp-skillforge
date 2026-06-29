@@ -3,13 +3,41 @@
 // (ref-count would drop to 0); shared bricks stay. Everything is recoverable (versioned).
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync, renameSync, realpathSync, statSync } from "node:fs";
-import { join, dirname, basename, relative, resolve } from "node:path";
+import { join, dirname, basename, relative, resolve, sep } from "node:path";
 import { loadConfig, run, includesOf, brickConsumers, splitFm, GENERATED_BANNER_RE } from "./compose.mjs";
 
 const mdFiles = (dir) =>
-  existsSync(dir) ? readdirSync(dir, { recursive: true }).filter((f) => String(f).endsWith(".md")).map(String) : [];
+  // Normalize separators: readdirSync({recursive}) yields OS-native backslashes on Windows, but
+  // include keys (brickConsumers) are always forward-slash — without this, nested bricks would be
+  // mis-counted and gc/remove could archive/delete a brick that is actually in use.
+  existsSync(dir) ? readdirSync(dir, { recursive: true }).filter((f) => String(f).endsWith(".md")).map((f) => String(f).replace(/\\/g, "/")) : [];
 const move = (src, dest) => { mkdirSync(dirname(dest), { recursive: true }); renameSync(src, dest); };
 const uniq = (a) => [...new Set(a)];
+
+// A skill name must be a single, filesystem-safe path segment — no traversal (`..`/separators),
+// Windows-reserved characters or device names, or control chars. (Naming POLICY — lowercase etc. —
+// is the conformance gate's job.) Returns an error message, or null when the name is safe.
+const RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
+function unsafeName(skill) {
+  if (!skill || skill === "." || skill === ".." || skill !== basename(skill) ||
+      /[<>:"/\\|?*]/.test(skill) || [...skill].some((c) => c.charCodeAt(0) < 32) || RESERVED_DEVICE.test(skill))
+    return `invalid skill name "${skill}" (single path segment only — no / \\ : * ? " < > | control chars, or reserved device names)`;
+  return null;
+}
+
+// A brick path (from a recipe's include text) is only safe to move/delete if it resolves INSIDE
+// the bricks dir — a crafted `<!-- include: ../victim -->` must never let remove touch outside it.
+// realpath-aware so even a symlinked brick that points outside bricks/ is left untouched; falls
+// back to a lexical check when the target doesn't exist yet.
+const insideBricks = (P, b) => {
+  const target = join(P.bricks, b + ".md");
+  try {
+    const real = realpathSync.native(target), base = realpathSync.native(P.bricks);
+    return real === base || real.startsWith(base + sep);
+  } catch {
+    return resolve(target).startsWith(resolve(P.bricks) + sep);
+  }
+};
 
 function paths(root, cfg = loadConfig(root)) {
   return {
@@ -23,6 +51,8 @@ function paths(root, cfg = loadConfig(root)) {
 
 // ── new ────────────────────────────────────────────────────────────────────
 export function create(skill, { root = process.cwd() } = {}) {
+  const bad = unsafeName(skill);
+  if (bad) return { ok: false, msg: bad };
   const P = paths(root);
   const dest = join(P.recipes, skill + ".md");
   if (existsSync(dest)) return { ok: false, msg: `recipe already exists: ${skill}` };
@@ -50,12 +80,8 @@ export function importFile(srcPath, { root = process.cwd(), name, force = false 
   if (!skill && fm) { const m = fm.match(/^name:[ \t]*(.*?)[ \t]*$/m); if (m) skill = m[1].replace(/^["'](.*)["']$/, "$1"); }
   if (!skill) skill = basename(srcPath).replace(/\.[^./\\]+$/, "");
 
-  // Filesystem-safe single segment: blocks path traversal (via --name/frontmatter) AND a crash
-  // on Windows-reserved characters. Naming POLICY (lowercase etc.) is the conformance gate's job.
-  const RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
-  if (!skill || skill === "." || skill === ".." || skill !== basename(skill) ||
-      /[\u0000-\u001f<>:"/\\|?*]/.test(skill) || RESERVED_DEVICE.test(skill))
-    return { ok: false, msg: `invalid skill name "${skill}" (must be a single path segment — no / \\ : * ? " < > | or control chars)` };
+  const bad = unsafeName(skill); // shared guard: blocks traversal / reserved chars / device names
+  if (bad) return { ok: false, msg: bad };
 
   const dest = join(P.recipes, skill + ".md");
   if (existsSync(dest)) {
@@ -74,20 +100,27 @@ export function importFile(srcPath, { root = process.cwd(), name, force = false 
 
 // ── remove (soft by default) ─────────────────────────────────────────────────
 export function remove(skill, { root = process.cwd(), hard = false } = {}) {
+  const bad = unsafeName(skill);
+  if (bad) return { ok: false, msg: bad };
   const P = paths(root);
-  const policy = hard ? "hard" : P.cfg.deletePolicy;
+  // Fail CLOSED: only an explicit `--hard` or deletePolicy:"hard" hard-deletes; any other value
+  // (typo, missing) is treated as soft, so a misconfig never silently destroys files.
+  const policy = (hard || P.cfg.deletePolicy === "hard") ? "hard" : "soft";
   const recipePath = join(P.recipes, skill + ".md");
   if (!existsSync(recipePath)) return { ok: false, msg: `skill not found: ${skill}` };
 
   const includes = uniq(includesOf(readFileSync(recipePath, "utf8")));
   const consumers = brickConsumers(root, P.cfg);
-  const exclusive = includes.filter((b) => consumers[b] && consumers[b].size === 1 && consumers[b].has(skill));
+  // Only consider bricks that resolve inside bricks/ for the move/delete — never act on an
+  // include that escapes the tree (build already rejects it; this protects remove independently).
+  const exclusive = includes.filter((b) => consumers[b] && consumers[b].size === 1 && consumers[b].has(skill) && insideBricks(P, b));
   const shared = includes
     .filter((b) => !exclusive.includes(b))
     .map((b) => ({ brick: b, alsoUsedBy: [...(consumers[b] || [])].filter((s) => s !== skill) }));
 
   if (policy === "soft") {
     const dir = join(P.archive, skill);
+    if (existsSync(dir)) return { ok: false, msg: `conflict: already archived: ${skill} (restore it, or clear ${P.cfg.archive}/${skill} first)` };
     move(recipePath, join(dir, "recipe.md"));
     for (const b of exclusive) move(join(P.bricks, b + ".md"), join(dir, "bricks", b + ".md"));
   } else {
@@ -107,6 +140,8 @@ export function remove(skill, { root = process.cwd(), hard = false } = {}) {
 
 // ── restore ───────────────────────────────────────────────────────────────────
 export function restore(skill, { root = process.cwd() } = {}) {
+  const bad = unsafeName(skill);
+  if (bad) return { ok: false, msg: bad };
   const P = paths(root);
   const dir = join(P.archive, skill);
   if (!existsSync(dir)) return { ok: false, msg: `nothing archived for: ${skill}` };
@@ -134,10 +169,13 @@ export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
   const consumers = brickConsumers(root, P.cfg);
   const orphans = mdFiles(P.bricks).map((f) => String(f).replace(/\.md$/, "")).filter((b) => !consumers[b]);
   if (apply && orphans.length) {
-    const policy = hard ? "hard" : P.cfg.deletePolicy;
+    const policy = (hard || P.cfg.deletePolicy === "hard") ? "hard" : "soft"; // fail closed to soft
     for (const b of orphans) {
-      if (policy === "soft") move(join(P.bricks, b + ".md"), join(P.archive, "_orphans", b + ".md"));
-      else rmSync(join(P.bricks, b + ".md"));
+      if (policy === "hard") { rmSync(join(P.bricks, b + ".md")); continue; }
+      // Version the archive target so re-archiving a same-named orphan never clobbers a prior one.
+      let dest = join(P.archive, "_orphans", b + ".md"), n = 1;
+      while (existsSync(dest)) dest = join(P.archive, "_orphans", `${b}.${n++}.md`);
+      move(join(P.bricks, b + ".md"), dest);
     }
   }
   return { ok: true, orphans, applied: apply,
@@ -207,12 +245,19 @@ export function list(root = process.cwd()) {
 
 // ── rename ─────────────────────────────────────────────────────────────────────
 export function rename(oldName, newName, { root = process.cwd() } = {}) {
+  const badOld = unsafeName(oldName); if (badOld) return { ok: false, msg: badOld };
+  const badNew = unsafeName(newName); if (badNew) return { ok: false, msg: badNew };
   const P = paths(root);
   const src = join(P.recipes, oldName + ".md");
   const dest = join(P.recipes, newName + ".md");
   if (!existsSync(src)) return { ok: false, msg: `skill not found: ${oldName}` };
   if (existsSync(dest)) return { ok: false, msg: `target already exists: ${newName}` };
-  let txt = readFileSync(src, "utf8").replace(new RegExp(`^(name:\\s*)${oldName}\\s*$`, "m"), `$1${newName}`);
+  // Escape regex metachars in the old name and accept an optionally-quoted value; function
+  // replacement avoids `$` in the new name being treated as a replacement token.
+  const esc = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let txt = readFileSync(src, "utf8").replace(
+    new RegExp(`^(name:[ \\t]*)["']?${esc}["']?[ \\t]*$`, "m"),
+    (_m, p1) => p1 + newName);
   writeFileSync(src, txt);
   move(src, dest);
   const oldCmd = join(P.out, oldName + ".md");

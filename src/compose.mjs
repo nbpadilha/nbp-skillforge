@@ -7,8 +7,8 @@
 //   Include:  <!-- include: doc-checklist -->
 //   Param:    <!-- include: run-dir | skill=fix; flags=--prefix fix --track -->  → {{skill}}/{{flags}}
 
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from "node:fs";
-import { join, dirname, basename } from "node:path";
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, realpathSync } from "node:fs";
+import { join, dirname, basename, resolve, sep, isAbsolute, posix } from "node:path";
 
 const DEFAULTS = {
   bricks: ".claude/forge/bricks",
@@ -54,9 +54,12 @@ export function loadConfig(root) {
   return { ...DEFAULTS, ...user };
 }
 
-// Brick paths included by a recipe's text (without .md). Basis for ref-counting.
+// Brick paths included by a recipe's text (without .md). Basis for ref-counting. Backslashes are
+// normalized to '/' so a `core\run` include keys the same as `core/run` (and as mdFiles on Windows).
 export function includesOf(text) {
-  return [...text.matchAll(INCLUDE)].map((m) => m[1].trim());
+  // Canonicalize so `core\run`, `sub/../foo`, `./foo` all key the same as the real brick path
+  // (and as mdFiles) — otherwise ref-counting (gc/remove) mismatches and could delete a used brick.
+  return [...text.matchAll(INCLUDE)].map((m) => posix.normalize(m[1].trim().replace(/\\/g, "/")));
 }
 
 // Map brick-path → Set(skills) that include it, across the ACTIVE recipes.
@@ -107,12 +110,19 @@ function compose(name, cfg, root, errors) {
   const { fm, body } = splitFm(raw);
   if (cfg.conformance && fm !== null) validateConformance(name, fm, errors);
   const out = body.replace(INCLUDE, (_, p, rawP) => {
-    const file = join(bricksAbs, p.trim() + ".md");
-    if (!existsSync(file)) { errors.push(`build error: [${name}] include of missing brick: ${p.trim()}`); return `‹MISSING BRICK: ${p.trim()}›`; }
+    const bp = posix.normalize(p.trim().replace(/\\/g, "/"));
+    const file = join(bricksAbs, bp + ".md");
+    // Keep includes inside the bricks root — an absolute or `../` (post-normalization) path must
+    // not read (and inline) files outside bricks/, nor leave a path lifecycle code could move/delete.
+    if (isAbsolute(bp) || bp === ".." || bp.startsWith("../") ||
+        (resolve(file) !== resolve(bricksAbs) && !resolve(file).startsWith(resolve(bricksAbs) + sep))) {
+      errors.push(`build error: [${name}] include path escapes bricks/: ${bp}`); return `‹UNSAFE INCLUDE: ${bp}›`;
+    }
+    if (!existsSync(file)) { errors.push(`build error: [${name}] include of missing brick: ${bp}`); return `‹MISSING BRICK: ${bp}›`; }
     const params = parseParams(rawP);
     let b = splitFm(readFileSync(file, "utf8").replace(/\r\n/g, "\n")).body;
     b = b.replace(/\{\{\s*([\w-]+)\s*\}\}/g, (_, k) => {
-      if (!(k in params)) { errors.push(`build error: [${name}] brick ${p.trim()} requires {{${k}}}, not provided by the recipe`); return `‹NO ${k}›`; }
+      if (!(k in params)) { errors.push(`build error: [${name}] brick ${bp} requires {{${k}}}, not provided by the recipe`); return `‹NO ${k}›`; }
       return params[k];
     });
     return b.trim();
@@ -126,6 +136,19 @@ export function run({ root = process.cwd(), mode = "build" } = {}) {
   const cfg = loadConfig(root);
   const recipesAbs = join(root, cfg.recipes);
   const outAbs = join(root, cfg.out);
+  const bricksAbs = join(root, cfg.bricks);
+  const archiveAbs = join(root, cfg.archive);
+  // The role dirs must be mutually non-nested: build writes into out, and gc scans bricks
+  // recursively — so any overlap (equal, or one inside another) could clobber/delete source files.
+  // Case-fold on case-insensitive filesystems (Windows/macOS) so `Bricks` and `bricks` overlap.
+  const ci = process.platform === "win32" || process.platform === "darwin";
+  // realpath resolves symlinks/junctions (so `out` symlinked at `recipes` is caught) and gives the
+  // canonical case for existing dirs; fall back to resolve() for a role dir that doesn't exist yet.
+  const norm = (p) => { let r; try { r = realpathSync.native(resolve(p)); } catch { r = resolve(p); } return ci ? r.toLowerCase() : r; };
+  const R = Object.entries({ bricks: bricksAbs, recipes: recipesAbs, out: outAbs, archive: archiveAbs }).map(([k, v]) => [k, norm(v)]);
+  for (const [ak, a] of R) for (const [bk, b] of R)
+    if (ak !== bk && (a === b || b.startsWith(a + sep)))
+      return { ok: false, errors: [`config error: '${bk}' must not be inside or equal to '${ak}' (build/gc would clobber source files)`], drift: 0, orphans: 0 };
   if (!existsSync(recipesAbs)) return { ok: false, errors: [`no recipes directory: ${cfg.recipes}`], drift: 0, orphans: 0 };
 
   const names = readdirSync(recipesAbs).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md"));

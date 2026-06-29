@@ -25,7 +25,7 @@ if [ -n "$env_hits" ]; then
 fi
 
 # Token-shaped strings in ADDED lines (skip the +++ file headers).
-patterns='(gh[pousr]_[A-Za-z0-9]{30,})|(sk-[A-Za-z0-9]{20,})|(npm_[A-Za-z0-9]{30,})|(AKIA[0-9A-Z]{16})|(-----BEGIN [A-Z ]*PRIVATE KEY-----)'
+patterns='(gh[pousr]_[A-Za-z0-9]{30,})|(github_pat_[A-Za-z0-9_]{50,})|(sk-[A-Za-z0-9_-]{20,})|(npm_[A-Za-z0-9]{30,})|(AKIA[0-9A-Z]{16})|(-----BEGIN [A-Z ]*PRIVATE KEY-----)'
 hits=$(git diff --cached --no-color -U0 | grep -E '^\+' | grep -Ev '^\+\+\+' | grep -En "$patterns" 2>/dev/null || true)
 if [ -n "$hits" ]; then
   echo "✗ possible secret in staged changes:"

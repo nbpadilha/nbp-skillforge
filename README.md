@@ -46,7 +46,7 @@ Installed from npm (zero runtime dependencies):
 ```bash
 npx nbp-forge init                # scaffold forge.config.json + dirs + a sample skill
 npx nbp-forge build  --root .     # generate skills from recipes + bricks
-npx nbp-forge check  --root .     # drift-gate: exit 1 if anything diverged / orphaned (CI, pre-commit)
+npx nbp-forge check  --root .     # drift-gate: exit 1 if any output diverged from its recipe (CI, pre-commit)
 npx nbp-forge help                # all commands; `help <command>` for one
 # or install once: npm i -g nbp-forge  →  nbp-forge build / nbp-forge check
 ```

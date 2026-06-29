@@ -2,10 +2,11 @@
 
 ## Install
 ```bash
-npm i -D nbp-forge        # or copy src/ + bin/ — zero dependencies
-node bin/cli.mjs build     # generate skills from recipes + bricks
-node bin/cli.mjs check     # drift-gate (CI / pre-commit)
+npm i -D nbp-forge         # zero dependencies
+npx nbp-forge build        # generate skills from recipes + bricks
+npx nbp-forge check        # drift-gate (CI / pre-commit)
 ```
+(From a clone of this repo the CLI is `node bin/cli.mjs <cmd>`.)
 
 ## ⚠️ Pitfall #1 (the most common) — editing the GENERATED file
 
@@ -31,13 +32,17 @@ agent) are about to edit one and see the banner, **stop and go to the recipe**.
   "out": ".claude/commands",
   "archive": ".claude/forge/_archive",
   "deletePolicy": "soft",
-  "enforceGenerated": false
+  "enforceGenerated": false,
+  "conformance": true
 }
 ```
 - **`deletePolicy`** — `soft` (move to `_archive/`, recoverable) or `hard` (delete permanently).
+  Any other/unknown value is treated as `soft` (fail-closed).
 - **`enforceGenerated`** — when `true`, `check` requires every output file to have a recipe,
   forbidding hand-made/edited skills (forge-only guarantee).
+- **`conformance`** — when `true` (default), validates each recipe's `name`/`description` against
+  the SKILL.md standard; set `false` to disable.
 
 ## Pre-commit / CI
-Run `node bin/cli.mjs check` on staged changes (or in CI). It fails if any generated file was
+Run `npx nbp-forge check` on staged changes (or in CI). It fails if any generated file was
 hand-edited, diverges from its recipe, or (with `enforceGenerated`) has no recipe.

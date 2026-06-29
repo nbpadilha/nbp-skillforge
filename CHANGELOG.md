@@ -6,6 +6,37 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-29
+Security & robustness hardening from a 4-reviewer adversarial gate (opus + sonnet + codex/gpt-5.5 + agy).
+
+### Security
+- Lifecycle commands (`new`/`rename`/`remove`/`restore`/`import`) now reject unsafe skill names —
+  path traversal (`..`/separators), Windows-reserved & device names, control chars. Previously only
+  `import` validated, so e.g. `forge remove ../x --hard` could delete a file outside the project.
+- `deletePolicy` is **fail-closed**: only an explicit `--hard` or `deletePolicy: "hard"` deletes; any
+  other/unknown value is treated as `soft`, so a typo can't silently destroy files.
+- An `include` directive that escapes the bricks dir (`../`, absolute path) is now a build error;
+  include paths are canonicalized (`core\run`, `sub/../foo`) so ref-counting can't be fooled into
+  deleting a used brick. `remove` realpath-checks a brick before deleting it.
+- The `bricks`/`recipes`/`out`/`archive` roles must be **distinct, non-nested** dirs (would
+  otherwise let `build`/`gc` clobber source) — checked case-insensitively on Windows/macOS and
+  symlink-resolved when the dirs exist.
+- Pre-commit secret scan also flags GitHub fine-grained PATs (`github_pat_`) and hyphenated OpenAI
+  keys (`sk-proj-`/`sk-ant-`/…).
+
+### Fixed
+- **Windows nested bricks**: backslash vs forward-slash paths mis-counted ref-counts, so `gc`/`remove`
+  could archive/delete a brick still in use — separators are now normalized.
+- `install-hooks` runs the hook via `sh`, so it works even when the hook file lacks the execute bit.
+- `rename` escapes regex metacharacters in the old name and updates a quoted `name:` value.
+- `remove` refuses to clobber an existing archive entry; `gc` versions a same-named orphan archive target.
+- CLI rejects missing option values, unknown flags, and missing required positional args (no more `undefined.md`).
+
+### Changed
+- `engines` is now `>=18.17.0` (the true floor for recursive `readdirSync` / `realpathSync.native`);
+  CI exercises 18.17.
+- Docs: SETUP uses `npx nbp-forge`; `--help`/usage shows the real `nbp-forge` binary name.
+
 ## [0.3.1] - 2026-06-29
 
 ### Added
@@ -66,7 +97,8 @@ First public release (npm).
 - **Test suite** (`node --test`, zero deps) covering the engine, lifecycle, and ref-counting.
 - Documentation: `README.md`, `SPEC.md`, `SETUP.md`, `SECURITY.md`, and a runnable [`examples/`](examples/) project.
 
-[Unreleased]: https://github.com/nbpadilha/nbp-forge/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/nbpadilha/nbp-forge/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/nbpadilha/nbp-forge/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/nbpadilha/nbp-forge/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/nbpadilha/nbp-forge/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nbpadilha/nbp-forge/compare/v0.1.0...v0.2.0

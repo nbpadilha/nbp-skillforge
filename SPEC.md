@@ -57,6 +57,19 @@ A `.gitattributes` with `eol=lf` for `forge/**` and the output dir is recommende
   single filesystem-safe path segment (no separators, `..`, reserved device names, or control
   chars). It does **not** auto-build (an external skill may not build yet); run `forge build` next.
 
+## Safety & boundaries
+- Skill names (`new`/`rename`/`remove`/`restore`/`import`) and include paths must be a single
+  filesystem-safe segment inside their root — `..`, separators, absolute paths, reserved device
+  names, and control chars are rejected, so a recipe or argument can't read or delete files outside
+  the configured `bricks`/`recipes` dirs. `remove` additionally realpath-checks a brick before
+  deleting it.
+- The `bricks`/`recipes`/`out`/`archive` roles must be **distinct, non-nested** directories
+  (checked, case-insensitive on Windows/macOS, symlink-resolved when they exist).
+- **Out of scope (by design):** nbp-forge runs with your own privileges on your own files. If you
+  deliberately place a **symlink inside `bricks/`** that points outside the tree, `build` will
+  follow it when inlining content (a content read, not a deletion) — same as any file tool. Don't
+  do that; it isn't a privilege boundary nbp-forge tries to enforce.
+
 ## The golden rule
 > Variation between skills is a **parameter** the recipe passes — never a modified copy of the brick.
 
