@@ -1,0 +1,4 @@
+# PLACEHOLDER
+node_modules/
+*.log
+.DS_Store

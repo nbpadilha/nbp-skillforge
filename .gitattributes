@@ -1,0 +1,2 @@
+# A forja emite LF. Forçar LF evita falso-positivo do drift-gate por CRLF (Windows).
+* text=auto eol=lf

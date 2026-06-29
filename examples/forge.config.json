@@ -1,0 +1,6 @@
+{
+  "bricks": "forge/bricks",
+  "recipes": "forge/recipes",
+  "out": "commands",
+  "enforceGenerated": true
+}
