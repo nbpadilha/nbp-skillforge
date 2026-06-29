@@ -1,5 +1,10 @@
 # nbp-forge 🧱
 
+[![npm version](https://img.shields.io/npm/v/nbp-forge.svg)](https://www.npmjs.com/package/nbp-forge)
+[![CI](https://github.com/nbpadilha/nbp-forge/actions/workflows/ci.yml/badge.svg)](https://github.com/nbpadilha/nbp-forge/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/npm/l/nbp-forge.svg)](LICENSE)
+[![node >=18](https://img.shields.io/node/v/nbp-forge.svg)](package.json)
+
 **Stop maintaining the same agent instructions in ten places. Write a step once, reuse it everywhere, and let a gate guarantee nothing ever drifts.**
 
 `nbp-forge` composes your AI-agent skills (`SKILL.md` / slash-command files) from **reusable bricks**. You edit the brick — every skill that uses it is current on the next build. A drift-gate makes it a guarantee, not a hope.
@@ -37,11 +42,13 @@ Two skills, the same brick, different parameters. One source of truth.
 ---
 
 ## Quick start
+Installed from npm (zero runtime dependencies):
 ```bash
-node bin/cli.mjs build  --root .     # generate skills from recipes + bricks
-node bin/cli.mjs check  --root .     # drift-gate: exit 1 if anything diverged / orphaned (CI, pre-commit)
+npx nbp-forge build  --root .     # generate skills from recipes + bricks
+npx nbp-forge check  --root .     # drift-gate: exit 1 if anything diverged / orphaned (CI, pre-commit)
+# or install once: npm i -g nbp-forge  →  nbp-forge build / nbp-forge check
 ```
-A complete runnable project lives in [`examples/`](examples/) — try `node bin/cli.mjs build --root examples`.
+From a clone of this repo, the CLI is `node bin/cli.mjs <cmd>`. A complete runnable project lives in [`examples/`](examples/) — try `npx nbp-forge build --root examples`.
 
 ## Full lifecycle (safe by default)
 Skills are generated, so you never hand-edit the output. Manage them through the forge:
