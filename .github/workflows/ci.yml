@@ -4,9 +4,12 @@ on: [push, pull_request]
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ["18", "20", "22"]   # 18 = the declared minimum (engines), so we test the floor
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: "20" }
+        with: { node-version: "${{ matrix.node-version }}" }
       - run: node --test                          # engine + lifecycle test suite
       - run: node bin/cli.mjs check --root examples  # drift-gate on the runnable example

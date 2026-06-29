@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // nbp-forge CLI. Run `forge help` for usage.
 
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { run } from "../src/compose.mjs";
 import { create, remove, restore, gc, rename, init, list, importFile } from "../src/lifecycle.mjs";
@@ -29,7 +30,7 @@ function usage(cmd) {
 }
 
 const argv = process.argv.slice(2);
-let root = process.cwd(), hard = false, apply = false, force = false, name, wantHelp = false;
+let root = process.cwd(), hard = false, apply = false, force = false, name, wantHelp = false, wantVersion = false;
 const pos = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -39,10 +40,21 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--apply") apply = true;
   else if (a === "--force") force = true;
   else if (a === "--help" || a === "-h") wantHelp = true;
+  else if (a === "--version" || a === "-v") wantVersion = true;
   else pos.push(a);
 }
 const cmd = pos[0] || "build";
 
+if (wantVersion) {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    console.log(`nbp-forge ${pkg.version}`);
+    process.exit(0);
+  } catch {
+    console.error("nbp-forge (version unavailable)");
+    process.exit(1);
+  }
+}
 if (wantHelp) { usage(pos[0]); process.exit(0); }
 
 function finish(r) {

@@ -1,6 +1,6 @@
 {
   "name": "nbp-forge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Compose portable agent skills (SKILL.md / commands) from reusable bricks, with a drift-gate.",
   "type": "module",
   "bin": { "nbp-forge": "bin/cli.mjs" },

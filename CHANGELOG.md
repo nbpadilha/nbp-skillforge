@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-29
+
+### Added
+- `forge --version` / `-v` — print the installed version.
+
+### Changed
+- CI now runs the suite on Node 18, 20, and 22 (18 = the declared `engines` minimum).
+
 ## [0.3.0] - 2026-06-29
 
 ### Added
@@ -58,7 +66,8 @@ First public release (npm).
 - **Test suite** (`node --test`, zero deps) covering the engine, lifecycle, and ref-counting.
 - Documentation: `README.md`, `SPEC.md`, `SETUP.md`, `SECURITY.md`, and a runnable [`examples/`](examples/) project.
 
-[Unreleased]: https://github.com/nbpadilha/nbp-forge/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/nbpadilha/nbp-forge/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/nbpadilha/nbp-forge/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/nbpadilha/nbp-forge/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/nbpadilha/nbp-forge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/nbpadilha/nbp-forge/releases/tag/v0.1.0
