@@ -8,4 +8,5 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "20" }
-      - run: node bin/cli.mjs check --root examples
+      - run: node --test                          # engine + lifecycle test suite
+      - run: node bin/cli.mjs check --root examples  # drift-gate on the runnable example
