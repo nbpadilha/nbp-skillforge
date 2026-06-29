@@ -51,6 +51,11 @@ A `.gitattributes` with `eol=lf` for `forge/**` and the output dir is recommende
   skill **only** when there are no recipes yet, the bricks/recipes/out roles are three distinct
   dirs, and none of the sample's targets already exist — so it is idempotent and never overwrites.
 - `list` is read-only: per skill, the bricks it includes; per brick, its ref-count and consumers.
+- `import <file>` onboards an existing skill **deterministically** (no LLM): it writes a recipe
+  from the file's frontmatter + body verbatim, stripping a leading GENERATED banner so a re-import
+  never double-banners. Name = `--name` › frontmatter `name:` › source basename; it must be a
+  single filesystem-safe path segment (no separators, `..`, reserved device names, or control
+  chars). It does **not** auto-build (an external skill may not build yet); run `forge build` next.
 
 ## The golden rule
 > Variation between skills is a **parameter** the recipe passes — never a modified copy of the brick.

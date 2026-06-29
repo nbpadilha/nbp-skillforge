@@ -69,6 +69,7 @@ Skills are generated, so you never hand-edit the output. Manage them through the
 | `forge init` | scaffold `forge.config.json` + dirs + a sample skill (idempotent; never overwrites) |
 | `forge list` | show each skill → the bricks it uses, and per-brick ref-count (blast radius) |
 | `forge new <skill>` | scaffold a new recipe |
+| `forge import <file>` | onboard an existing `SKILL.md`/command as a recipe (verbatim; strips a prior GENERATED banner). `--name` overrides; `--force` overwrites. Run `forge build` after. |
 | `forge rename <old> <new>` | rename a skill (regenerates, removes the stale output) |
 | `forge remove <skill>` | **soft-delete** the recipe + the bricks **only that skill owns**; shared bricks stay (you're told which and why) |
 | `forge restore <skill>` | bring a removed skill (and its bricks) back |

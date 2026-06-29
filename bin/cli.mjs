@@ -3,7 +3,7 @@
 
 import { resolve } from "node:path";
 import { run } from "../src/compose.mjs";
-import { create, remove, restore, gc, rename, init, list } from "../src/lifecycle.mjs";
+import { create, remove, restore, gc, rename, init, list, importFile } from "../src/lifecycle.mjs";
 
 const HELP = {
   build:   "build [--root <dir>]                 generate every skill from its recipe + bricks",
@@ -11,6 +11,7 @@ const HELP = {
   init:    "init [--root <dir>]                  scaffold forge.config.json + dirs + a sample skill",
   list:    "list [--root <dir>]                  show skills → bricks and per-brick ref-count (blast radius)",
   new:     "new <skill> [--root <dir>]           scaffold a new recipe, then build",
+  import:  "import <file> [--name <n>] [--force]  onboard an existing SKILL.md/command as a recipe",
   rename:  "rename <old> <new> [--root <dir>]    rename a skill (regenerate, drop the stale output)",
   remove:  "remove <skill> [--hard] [--root <dir>]   soft-delete (→ _archive) the recipe + exclusive bricks",
   restore: "restore <skill> [--root <dir>]       bring a removed skill (and its bricks) back",
@@ -21,18 +22,20 @@ function usage(cmd) {
   if (cmd && HELP[cmd]) { console.log("forge " + HELP[cmd]); return; }
   console.log("nbp-forge — compose portable agent skills from reusable bricks, with a drift-gate.\n");
   console.log("usage: forge <command> [options]\n");
-  for (const k of ["build", "check", "init", "list", "new", "rename", "remove", "restore", "gc", "help"]) console.log("  " + HELP[k]);
+  for (const k of ["build", "check", "init", "list", "new", "import", "rename", "remove", "restore", "gc", "help"]) console.log("  " + HELP[k]);
   console.log("\nPaths/options come from forge.config.json at the root (see SPEC.md).");
 }
 
 const argv = process.argv.slice(2);
-let root = process.cwd(), hard = false, apply = false, wantHelp = false;
+let root = process.cwd(), hard = false, apply = false, force = false, name, wantHelp = false;
 const pos = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === "--root") root = resolve(argv[++i] || ".");
+  else if (a === "--name") name = argv[++i];
   else if (a === "--hard") hard = true;
   else if (a === "--apply") apply = true;
+  else if (a === "--force") force = true;
   else if (a === "--help" || a === "-h") wantHelp = true;
   else pos.push(a);
 }
@@ -70,6 +73,7 @@ switch (cmd) {
     break;
   }
   case "new":     finish(create(pos[1], { root })); break;
+  case "import":  finish(importFile(pos[1], { root, name, force })); break;
   case "remove":  finish(remove(pos[1], { root, hard })); break;
   case "restore": finish(restore(pos[1], { root })); break;
   case "gc":      finish(gc(root, { apply, hard })); break;

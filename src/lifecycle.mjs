@@ -2,9 +2,9 @@
 // Ref-counted soft-delete: removing a skill archives its recipe + the bricks it EXCLUSIVELY owns
 // (ref-count would drop to 0); shared bricks stay. Everything is recoverable (versioned).
 
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync, renameSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync, renameSync, realpathSync, statSync } from "node:fs";
 import { join, dirname, basename, relative, resolve } from "node:path";
-import { loadConfig, run, includesOf, brickConsumers } from "./compose.mjs";
+import { loadConfig, run, includesOf, brickConsumers, splitFm, GENERATED_BANNER_RE } from "./compose.mjs";
 
 const mdFiles = (dir) =>
   existsSync(dir) ? readdirSync(dir, { recursive: true }).filter((f) => String(f).endsWith(".md")).map(String) : [];
@@ -30,6 +30,46 @@ export function create(skill, { root = process.cwd() } = {}) {
   writeFileSync(dest, `---\nname: ${skill}\ndescription: TODO\n---\n# ${skill}\n\nTODO — write the skill here. Reuse shared bricks with an include directive (see SPEC.md).\n`);
   const r = run({ root, mode: "build" });
   return { ok: r.ok, msg: `recipe created: ${skill} (edit ${P.cfg.recipes}/${skill}.md, then build)`, build: r };
+}
+
+// ── import (onboard an existing SKILL.md/command as a recipe) ─────────────────
+// Deterministic, no LLM: wraps the source file's frontmatter + body verbatim into a recipe.
+// A previously-GENERATED banner is stripped so a re-import never double-banners on build.
+export function importFile(srcPath, { root = process.cwd(), name, force = false } = {}) {
+  const P = paths(root);
+  if (!srcPath) return { ok: false, msg: "import: missing <file>" };
+  if (!existsSync(srcPath)) return { ok: false, msg: `source file not found: ${srcPath}` };
+  if (!statSync(srcPath).isFile()) return { ok: false, msg: `source is not a file: ${srcPath}` };
+
+  const raw = readFileSync(srcPath, "utf8").replace(/\r\n/g, "\n");
+  const { fm, body } = splitFm(raw);
+  const cleanBody = body.replace(GENERATED_BANNER_RE, "");
+
+  // Name precedence: --name › frontmatter `name:` › source basename (extension stripped).
+  let skill = name;
+  if (!skill && fm) { const m = fm.match(/^name:[ \t]*(.*?)[ \t]*$/m); if (m) skill = m[1].replace(/^["'](.*)["']$/, "$1"); }
+  if (!skill) skill = basename(srcPath).replace(/\.[^./\\]+$/, "");
+
+  // Filesystem-safe single segment: blocks path traversal (via --name/frontmatter) AND a crash
+  // on Windows-reserved characters. Naming POLICY (lowercase etc.) is the conformance gate's job.
+  const RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i;
+  if (!skill || skill === "." || skill === ".." || skill !== basename(skill) ||
+      /[\u0000-\u001f<>:"/\\|?*]/.test(skill) || RESERVED_DEVICE.test(skill))
+    return { ok: false, msg: `invalid skill name "${skill}" (must be a single path segment — no / \\ : * ? " < > | or control chars)` };
+
+  const dest = join(P.recipes, skill + ".md");
+  if (existsSync(dest)) {
+    if (statSync(dest).isDirectory()) return { ok: false, msg: `destination is a directory, refusing: ${dest}` };
+    if (!force) return { ok: false, msg: `recipe already exists: ${skill} (use --force to overwrite)` };
+  }
+
+  mkdirSync(P.recipes, { recursive: true });
+  writeFileSync(dest, fm !== null ? `---\n${fm}\n---\n${cleanBody}` : cleanBody);
+
+  // Deliberately does NOT auto-build: an imported skill may not build yet (missing brick or a
+  // non-conformant name), so building here could fail after a --force overwrite and leave a
+  // clobbered, broken recipe. Creating the recipe is atomic; the user runs `forge build` next.
+  return { ok: true, skill, msg: `imported "${skill}" → ${P.cfg.recipes}/${skill}.md. Run \`forge build\` to generate.` };
 }
 
 // ── remove (soft by default) ─────────────────────────────────────────────────
