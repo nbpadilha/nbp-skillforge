@@ -5,7 +5,8 @@ All notable changes to this project are documented here. The format is based on
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-Committed since the 0.1.0 npm publish; targets **0.2.0**.
+
+## [0.2.0] - 2026-06-29
 
 ### Added
 - **Conformance gate**: `build`/`check` validate a recipe's frontmatter against the agentskills
@@ -44,5 +45,6 @@ First public release (npm).
 - **Test suite** (`node --test`, zero deps) covering the engine, lifecycle, and ref-counting.
 - Documentation: `README.md`, `SPEC.md`, `SETUP.md`, `SECURITY.md`, and a runnable [`examples/`](examples/) project.
 
-[Unreleased]: https://github.com/nbpadilha/nbp-forge/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/nbpadilha/nbp-forge/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/nbpadilha/nbp-forge/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/nbpadilha/nbp-forge/releases/tag/v0.1.0
