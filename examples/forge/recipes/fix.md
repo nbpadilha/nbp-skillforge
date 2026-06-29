@@ -1,11 +1,11 @@
 ---
 name: fix
-description: Corrige um bug pontual.
+description: Fix a small, well-scoped bug.
 ---
 # Fix
 
-Corrija o bug com escopo pequeno.
+Fix the bug with a small scope.
 
 <!-- include: run-dir | skill=fix; flags=--prefix fix --track -->
 
-Implemente a correção mínima e valide.
+Apply the minimal change and validate.

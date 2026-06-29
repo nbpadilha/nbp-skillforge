@@ -1,11 +1,11 @@
 ---
 name: feature
-description: Implementa uma feature multi-camada.
+description: Implement a multi-layer feature.
 ---
 # Feature
 
-Implemente a feature cobrindo todas as camadas.
+Implement the feature across all required layers.
 
 <!-- include: run-dir | skill=feature; flags=--track -->
 
-Quebre em etapas verificáveis e valide cada camada.
+Break it into verifiable steps and validate each layer.

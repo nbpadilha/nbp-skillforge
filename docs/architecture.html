@@ -1,4 +1,112 @@
-<!-- PLACEHOLDER — página visual da arquitetura (adaptar a versão já feita no athena-conecta,
-     genérica, sem dados internos do projeto). -->
-<!doctype html><meta charset="utf-8"><title>nbp-forge — arquitetura</title>
-<p>PLACEHOLDER — visual da arquitetura LEGO de skills.</p>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>nbp-forge — architecture</title>
+<style>
+  :root{--bg:#0f1220;--panel:#171a2b;--panel2:#1e2238;--ink:#e9ecf5;--muted:#9aa3c0;--line:#2a2f49;
+    --accent:#6ea8fe;--accent2:#7ee787;--brick:#f0a35e;--recipe:#b692f6;--ok:#7ee787;--warn:#ff8a8a;}
+  *{box-sizing:border-box}
+  body{margin:0;background:radial-gradient(1200px 700px at 80% -10%,#1b2440 0,transparent 60%),var(--bg);
+    color:var(--ink);font:16px/1.65 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif}
+  .wrap{max-width:1000px;margin:0 auto;padding:36px 22px 80px}
+  .eyebrow{letter-spacing:.18em;text-transform:uppercase;font-size:12px;color:var(--accent);font-weight:700}
+  h1{font-size:clamp(30px,5vw,44px);line-height:1.1;margin:.3em 0 .2em;font-weight:800}
+  h1 .pop{background:linear-gradient(90deg,var(--brick),var(--recipe));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lead{font-size:19px;color:var(--muted);max-width:64ch}
+  h2{font-size:24px;margin:46px 0 8px}
+  h2 .n{color:var(--accent);margin-right:.4em;opacity:.7}
+  .sub{color:var(--muted);margin:0 0 18px;max-width:72ch}
+  .grid{display:grid;gap:16px}.g3{grid-template-columns:repeat(3,1fr)}.g2{grid-template-columns:1fr 1fr}
+  @media(max-width:780px){.g3,.g2{grid-template-columns:1fr}}
+  .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:16px;padding:20px}
+  .card h3{margin:0 0 6px;font-size:18px}.card p{margin:6px 0 0;color:var(--muted);font-size:14.5px}
+  .kpis{display:flex;gap:14px;flex-wrap:wrap;margin-top:22px}
+  .kpi{background:#0d1020;border:1px solid var(--line);border-radius:14px;padding:14px 18px;min-width:120px}
+  .kpi b{display:block;font-size:30px;font-weight:800;background:linear-gradient(90deg,var(--accent),var(--accent2));-webkit-background-clip:text;background-clip:text;color:transparent;line-height:1}
+  .kpi span{font-size:12.5px;color:var(--muted)}
+  pre{background:#0c0f1d;border:1px solid var(--line);border-radius:12px;padding:16px;overflow-x:auto;
+    font-family:ui-monospace,Menlo,monospace;font-size:13px;color:#d5dcf0;line-height:1.6}
+  .flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}
+  .chip{background:#0d1020;border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-size:14px}
+  .chip.brick{border-left:4px solid var(--brick)} .chip.recipe{border-left:4px solid var(--recipe)} .chip.out{border-left:4px solid var(--ok)}
+  .arrow{color:var(--accent);font-size:22px}
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px}
+  td{border-bottom:1px solid var(--line);padding:9px 8px;vertical-align:top;color:var(--muted)}
+  td:first-child{font-family:ui-monospace,Menlo,monospace;color:var(--accent);white-space:nowrap;width:1%}
+  .rule{border-left:4px solid var(--accent);background:#0d1020;padding:12px 16px;border-radius:0 10px 10px 0;color:#eaf0ff;font-weight:600;margin:14px 0;max-width:72ch}
+  footer{margin-top:54px;padding-top:18px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">nbp-forge · architecture</div>
+  <h1>Agent skills, built from <span class="pop">reusable bricks</span></h1>
+  <p class="lead">Write a step once, reuse it everywhere, and let a gate guarantee nothing ever drifts. The generated file is standard and self-contained — portable across Claude Code, Codex, Cursor.</p>
+  <div class="kpis">
+    <div class="kpi"><b>1</b><span>edit, not N copies</span></div>
+    <div class="kpi"><b>~85%</b><span>fewer copies of a step shared by 7 skills</span></div>
+    <div class="kpi"><b>0</b><span>drift tolerated (gate-enforced)</span></div>
+  </div>
+
+  <h2><span class="n">01</span>The idea</h2>
+  <p class="sub">A skill is a <b>recipe</b> that <b>points to bricks</b> instead of copying them. A deterministic build assembles the final file your agent reads. The brick is the single source of truth — edit it once, every skill that uses it is current on the next build.</p>
+  <div class="flow">
+    <span class="chip brick">🧱 bricks/ <small>(shared pieces)</small></span>
+    <span class="chip recipe">📄 recipes/ <small>(one per skill, with includes)</small></span>
+    <span class="arrow">→</span>
+    <span class="chip">⚙️ forge build</span>
+    <span class="arrow">→</span>
+    <span class="chip out">✅ &lt;out&gt;/&lt;skill&gt;.md <small>(generated)</small></span>
+  </div>
+
+  <h2><span class="n">02</span>The problem it kills</h2>
+  <div class="grid g2">
+    <div class="card" style="border-left:4px solid var(--warn)">
+      <h3>Before — copy-paste rot</h3>
+      <p>The same step pasted into 5–7 skills. Fix one, forget the rest. Versions diverge silently; nobody knows which is right; reviewing means hunting every copy.</p>
+    </div>
+    <div class="card" style="border-left:4px solid var(--ok)">
+      <h3>After — one source, gate-enforced</h3>
+      <p>The step lives in one brick. Edit it → all skills update on build. A drift-gate blocks any generated file that was hand-edited or fell out of sync.</p>
+    </div>
+  </div>
+
+  <h2><span class="n">03</span>Variation is a parameter, never a copy</h2>
+  <p class="sub">Two skills, the same brick, different inputs:</p>
+  <pre>&lt;!-- include: run-dir | skill=fix; flags=--prefix fix --track --&gt;     # in fix
+&lt;!-- include: run-dir | skill=feature; flags=--track --&gt;            # in feature
+        → {{skill}} / {{flags}} substituted inside the brick</pre>
+  <div class="rule">The golden rule: variation between skills is a parameter the recipe passes — never a modified copy of the brick.</div>
+
+  <h2><span class="n">04</span>Safe lifecycle</h2>
+  <p class="sub">Skills are generated, so you never hand-edit the output — you manage them through the forge. Removal is safe by reference count.</p>
+  <div class="card">
+    <table>
+      <tr><td>new</td><td>scaffold a new recipe</td></tr>
+      <tr><td>rename</td><td>rename a skill (regenerate, drop the stale output)</td></tr>
+      <tr><td>remove</td><td>soft-delete the recipe + only the bricks <b>that skill owns</b>; shared bricks stay (you're told which and why)</td></tr>
+      <tr><td>restore</td><td>bring a removed skill (and its bricks) back from <code>_archive/</code></td></tr>
+      <tr><td>gc</td><td>find / archive orphan bricks (used by nobody)</td></tr>
+    </table>
+  </div>
+  <p class="sub" style="margin-top:14px">Removing a skill <b>never</b> deletes a shared brick: a brick used by exactly one skill is owned by it; a brick used by several belongs to none and is never touched. Removed items are soft-deleted to <code>_archive/</code> (versioned, recoverable). Set <code>deletePolicy: "hard"</code> for permanent deletes.</p>
+
+  <h2><span class="n">05</span>Glossary</h2>
+  <div class="card">
+    <table>
+      <tr><td>skill</td><td>An automated playbook an AI agent follows to do a job.</td></tr>
+      <tr><td>brick</td><td>A reusable step kept in one place, shared by many skills.</td></tr>
+      <tr><td>recipe</td><td>A skill's source: local content + includes pointing to bricks.</td></tr>
+      <tr><td>drift</td><td>When copies of the same step stop being equal over time — what this kills.</td></tr>
+      <tr><td>gate</td><td>The automated check that blocks any output out of sync with its recipe.</td></tr>
+    </table>
+  </div>
+
+  <footer>nbp-forge · <a href="https://github.com/nikpadilha/nbp-forge">github.com/nikpadilha/nbp-forge</a> · MIT</footer>
+</div>
+</body>
+</html>

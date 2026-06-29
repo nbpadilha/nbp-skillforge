@@ -1,2 +1,2 @@
-// nbp-forge — check é run({mode:'check'}); mantido p/ import explícito.
-export { run as check } from './compose.mjs';
+// nbp-forge — `check` is run({ mode: 'check' }); kept for an explicit import.
+export { run as check } from "./compose.mjs";

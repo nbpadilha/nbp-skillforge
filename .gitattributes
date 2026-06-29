@@ -1,2 +1,2 @@
-# A forja emite LF. Forçar LF evita falso-positivo do drift-gate por CRLF (Windows).
+# The forge emits LF. Forcing LF avoids drift-gate false positives from CRLF (Windows).
 * text=auto eol=lf

@@ -1,17 +1,17 @@
-# SECURITY — blast radius de peças compartilhadas
+# Security — blast radius of shared bricks
 
-> **PLACEHOLDER** — desenvolver.
+Reuse has a security cost: **a bug in a brick propagates to every skill that uses it.**
+(Independent audits of agent-skill marketplaces report systemic, cascading risk through the
+dependency graph — the more shared and interconnected the pieces, the larger the combined
+attack surface.)
 
-Reuso traz um custo de segurança: **um bug numa peça se propaga para todas as skills
-que a usam**. (cf. auditorias de marketplaces de skills — risco sistêmico por grafo de
-dependência.)
+## Principles
+- Each brick declares what it does **not** guarantee (`guarantees-not` in its frontmatter).
+- A change to a **high-reuse** brick deserves heavier review, proportional to how many skills
+  depend on it. Use `forge` reference counts to know the blast radius before editing.
+- The build is deterministic and auditable: the generated output is versioned and reviewable.
+- `forge remove` never deletes a shared brick — only bricks a single skill exclusively owns.
 
-## Princípios (rascunho)
-- Cada peça declara no frontmatter o que **NÃO** garante (`guarantees-not`).
-- Mudança em peça de **alto reuso** exige revisão mais pesada (proporcional ao nº de skills).
-- O build é determinístico e auditável: a saída `SKILL.md` é versionada e revisável.
-
-## TODO
-- [ ] Métrica de blast radius (nº de skills por peça) no relatório do build
-- [ ] Política de revisão por nível de reuso
-- [ ] Como reportar vulnerabilidade
+## Reporting a vulnerability
+Open a private security advisory on the repository, or contact the maintainer. Please do not
+file public issues for undisclosed vulnerabilities.

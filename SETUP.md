@@ -1,36 +1,43 @@
 # Setup & Pitfalls
 
-> **PLACEHOLDER** — refinar quando o motor for portado.
-
-## Instalação (pretendida)
+## Install
 ```bash
-npm i -D nbp-forge        # ou copie engine/ — zero dependências
-node bin/cli.mjs build     # gera os SKILL.md a partir das recipes
+npm i -D nbp-forge        # or copy src/ + bin/ — zero dependencies
+node bin/cli.mjs build     # generate skills from recipes + bricks
 node bin/cli.mjs check     # drift-gate (CI / pre-commit)
 ```
 
-## ⚠️ Erro nº 1 (o mais comum) — editar o arquivo GERADO
+## ⚠️ Pitfall #1 (the most common) — editing the GENERATED file
 
-Frameworks de agente (Claude Code, Codex, Cursor…) e a maioria dos `CLAUDE.md` /
-`AGENTS.md` por aí instruem: **"edite a skill em `.claude/commands/<skill>.md`"** (ou
-`.codex/`, etc.). Com a forja isso está **errado** — esse arquivo é **build output**.
+Agent frameworks (Claude Code, Codex, Cursor…) and most `CLAUDE.md` / `AGENTS.md` files out
+there tell you: **"edit the skill at `.claude/commands/<skill>.md`"** (or `.codex/`, etc.).
+With the forge that is **wrong** — that file is **build output**.
 
-- ✅ Edite a **recipe** (`recipes/<skill>.md`) ou o **brick** (`bricks/<brick>.md`) e rode `build`.
-- ❌ Nunca edite o `SKILL.md`/`commands/` gerado — o `check` bloqueia (a edição diverge da recipe).
+- ✅ Edit the **recipe** (`recipes/<skill>.md`) or the **brick** (`bricks/<brick>.md`), then run `build`.
+- ❌ Never edit the generated `SKILL.md`/command — `check` blocks it (the edit diverges from the recipe).
 
-Cada arquivo gerado carrega um banner `<!-- GERADO … não editar aqui -->`. Se você (ou
-um agente) for editar e ver o banner, **pare e vá para a recipe**.
+Every generated file carries a `<!-- GENERATED … do not edit here -->` banner. If you (or an
+agent) are about to edit one and see the banner, **stop and go to the recipe**.
 
-> **Ao adotar a forja num projeto existente:** faça um *grep* no seu `CLAUDE.md`/`AGENTS.md`
-> por "edit … commands" / "editar … `.md`" e redirecione para a recipe. Esse passo é fácil
-> de esquecer e gera atrito (o agente tenta editar o gerado e o gate barra).
+> **Adopting the forge in an existing project:** grep your `CLAUDE.md`/`AGENTS.md` for
+> "edit … commands" / "edit … `.md`" and redirect it to the recipe. This step is easy to forget
+> and causes friction (the agent tries to edit the generated file and the gate blocks it).
 
-## Opções (config)
-- `enforceGenerated` (default **off** no repo público): quando **on**, o `check` exige que
-  todo `SKILL.md`/command tenha recipe — proíbe arquivo gerado "na mão". Ligue se você quer
-  a garantia forge-only (é o modo usado no projeto de origem). TODO: formato do config.
+## Config — `forge.config.json`
+```json
+{
+  "bricks": ".claude/forge/bricks",
+  "recipes": ".claude/forge/recipes",
+  "out": ".claude/commands",
+  "archive": ".claude/forge/_archive",
+  "deletePolicy": "soft",
+  "enforceGenerated": false
+}
+```
+- **`deletePolicy`** — `soft` (move to `_archive/`, recoverable) or `hard` (delete permanently).
+- **`enforceGenerated`** — when `true`, `check` requires every output file to have a recipe,
+  forbidding hand-made/edited skills (forge-only guarantee).
 
-## TODO
-- [ ] Portar o motor validado (`compose` + `check` + `--enforce`)
-- [ ] `forge.config.json` com `enforceGenerated`
-- [ ] Exemplo end-to-end em `examples/`
+## Pre-commit / CI
+Run `node bin/cli.mjs check` on staged changes (or in CI). It fails if any generated file was
+hand-edited, diverges from its recipe, or (with `enforceGenerated`) has no recipe.

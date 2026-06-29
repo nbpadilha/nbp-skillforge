@@ -1,6 +1,6 @@
-// nbp-forge — ciclo de vida de skills: new / remove / restore / gc / rename.
-// Soft-delete por ref-count: remover uma skill arquiva a recipe + os bricks EXCLUSIVOS dela
-// (ref-count cairia a 0); bricks compartilhados ficam. Tudo recuperável (versionado).
+// nbp-forge — skill lifecycle: new / remove / restore / gc / rename.
+// Ref-counted soft-delete: removing a skill archives its recipe + the bricks it EXCLUSIVELY owns
+// (ref-count would drop to 0); shared bricks stay. Everything is recoverable (versioned).
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync, renameSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
@@ -25,19 +25,19 @@ function paths(root, cfg = loadConfig(root)) {
 export function create(skill, { root = process.cwd() } = {}) {
   const P = paths(root);
   const dest = join(P.recipes, skill + ".md");
-  if (existsSync(dest)) return { ok: false, msg: `recipe já existe: ${skill}` };
+  if (existsSync(dest)) return { ok: false, msg: `recipe already exists: ${skill}` };
   mkdirSync(P.recipes, { recursive: true });
-  writeFileSync(dest, `---\nname: ${skill}\ndescription: TODO\n---\n# ${skill}\n\nTODO — conteúdo da skill. Use <!-- include: <brick> --> para reaproveitar.\n`);
+  writeFileSync(dest, `---\nname: ${skill}\ndescription: TODO\n---\n# ${skill}\n\nTODO — write the skill here. Reuse shared bricks with an include directive (see SPEC.md).\n`);
   const r = run({ root, mode: "build" });
-  return { ok: r.ok, msg: `recipe criada: ${skill} (edite ${P.cfg.recipes}/${skill}.md e rode build)` , build: r };
+  return { ok: r.ok, msg: `recipe created: ${skill} (edit ${P.cfg.recipes}/${skill}.md, then build)`, build: r };
 }
 
-// ── remove (soft por padrão) ────────────────────────────────────────────────
+// ── remove (soft by default) ─────────────────────────────────────────────────
 export function remove(skill, { root = process.cwd(), hard = false } = {}) {
   const P = paths(root);
   const policy = hard ? "hard" : P.cfg.deletePolicy;
   const recipePath = join(P.recipes, skill + ".md");
-  if (!existsSync(recipePath)) return { ok: false, msg: `skill não encontrada: ${skill}` };
+  if (!existsSync(recipePath)) return { ok: false, msg: `skill not found: ${skill}` };
 
   const includes = uniq(includesOf(readFileSync(recipePath, "utf8")));
   const consumers = brickConsumers(root, P.cfg);
@@ -55,28 +55,29 @@ export function remove(skill, { root = process.cwd(), hard = false } = {}) {
     for (const b of exclusive) rmSync(join(P.bricks, b + ".md"));
   }
   const cmd = join(P.out, skill + ".md");
-  if (existsSync(cmd)) rmSync(cmd); // command é build output
+  if (existsSync(cmd)) rmSync(cmd); // the command is build output
 
   const r = run({ root, mode: "build" });
+  const verb = policy === "soft" ? "Archived" : "Deleted";
   return { ok: r.ok, policy, exclusive, shared, msg:
-    `skill "${skill}" removida (${policy}). ` +
-    `Arquivados: recipe${exclusive.length ? " + " + exclusive.length + " brick(s) exclusivo(s): " + exclusive.join(", ") : ""}. ` +
-    (shared.length ? `Mantidos (compartilhados): ${shared.map((s) => `${s.brick} [${s.alsoUsedBy.join(",")}]`).join("; ")}.` : "Sem bricks compartilhados.") };
+    `skill "${skill}" removed (${policy}). ` +
+    `${verb}: recipe${exclusive.length ? " + " + exclusive.length + " exclusive brick(s): " + exclusive.join(", ") : ""}. ` +
+    (shared.length ? `Kept (shared): ${shared.map((s) => `${s.brick} [${s.alsoUsedBy.join(",")}]`).join("; ")}.` : "No shared bricks.") };
 }
 
-// ── restore ─────────────────────────────────────────────────────────────────
+// ── restore ───────────────────────────────────────────────────────────────────
 export function restore(skill, { root = process.cwd() } = {}) {
   const P = paths(root);
   const dir = join(P.archive, skill);
-  if (!existsSync(dir)) return { ok: false, msg: `nada arquivado para: ${skill}` };
+  if (!existsSync(dir)) return { ok: false, msg: `nothing archived for: ${skill}` };
   const recDest = join(P.recipes, skill + ".md");
-  if (existsSync(recDest)) return { ok: false, msg: `conflito: recipe ${skill} já existe (resolva antes de restaurar)` };
+  if (existsSync(recDest)) return { ok: false, msg: `conflict: recipe ${skill} already exists (resolve before restoring)` };
 
   const conflicts = [];
   for (const rel of mdFiles(join(dir, "bricks"))) {
     if (existsSync(join(P.bricks, rel))) conflicts.push(rel);
   }
-  if (conflicts.length) return { ok: false, msg: `conflito: bricks já existem: ${conflicts.join(", ")}` };
+  if (conflicts.length) return { ok: false, msg: `conflict: bricks already exist: ${conflicts.join(", ")}` };
 
   move(join(dir, "recipe.md"), recDest);
   const restored = [];
@@ -84,10 +85,10 @@ export function restore(skill, { root = process.cwd() } = {}) {
   rmSync(dir, { recursive: true, force: true });
 
   const r = run({ root, mode: "build" });
-  return { ok: r.ok, restored, msg: `skill "${skill}" restaurada${restored.length ? " + bricks: " + restored.join(", ") : ""}.` };
+  return { ok: r.ok, restored, msg: `skill "${skill}" restored${restored.length ? " + bricks: " + restored.join(", ") : ""}.` };
 }
 
-// ── gc (bricks órfãos: ref-count 0) ──────────────────────────────────────────
+// ── gc (orphan bricks: ref-count 0) ──────────────────────────────────────────
 export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
   const P = paths(root);
   const consumers = brickConsumers(root, P.cfg);
@@ -100,21 +101,21 @@ export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
     }
   }
   return { ok: true, orphans, applied: apply,
-    msg: orphans.length ? `${orphans.length} brick(s) órfão(s): ${orphans.join(", ")}${apply ? " — arquivados" : " (rode com --apply p/ arquivar)"}` : "nenhum brick órfão." };
+    msg: orphans.length ? `${orphans.length} orphan brick(s): ${orphans.join(", ")}${apply ? " — archived" : " (run with --apply to archive)"}` : "no orphan bricks." };
 }
 
-// ── rename ───────────────────────────────────────────────────────────────────
+// ── rename ─────────────────────────────────────────────────────────────────────
 export function rename(oldName, newName, { root = process.cwd() } = {}) {
   const P = paths(root);
   const src = join(P.recipes, oldName + ".md");
   const dest = join(P.recipes, newName + ".md");
-  if (!existsSync(src)) return { ok: false, msg: `skill não encontrada: ${oldName}` };
-  if (existsSync(dest)) return { ok: false, msg: `destino já existe: ${newName}` };
+  if (!existsSync(src)) return { ok: false, msg: `skill not found: ${oldName}` };
+  if (existsSync(dest)) return { ok: false, msg: `target already exists: ${newName}` };
   let txt = readFileSync(src, "utf8").replace(new RegExp(`^(name:\\s*)${oldName}\\s*$`, "m"), `$1${newName}`);
   writeFileSync(src, txt);
   move(src, dest);
   const oldCmd = join(P.out, oldName + ".md");
-  if (existsSync(oldCmd)) rmSync(oldCmd); // command antigo é órfão agora
+  if (existsSync(oldCmd)) rmSync(oldCmd); // old command is now an orphan
   const r = run({ root, mode: "build" });
-  return { ok: r.ok, msg: `skill "${oldName}" → "${newName}" (command antigo removido, novo gerado).` };
+  return { ok: r.ok, msg: `skill "${oldName}" → "${newName}" (old command removed, new one generated).` };
 }

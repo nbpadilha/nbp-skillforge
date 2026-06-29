@@ -1,7 +1,7 @@
-// nbp-forge — motor de composição. Monta SKILL.md/commands a partir de recipes + bricks.
-// Zero dependências. Portado e generalizado do engine de origem (athena-conecta, ADR 0036).
+// nbp-forge — composition engine. Builds SKILL.md/command files from recipes + bricks.
+// Zero dependencies. Generalized from the engine it was extracted from (ADR 0036).
 //
-// Caminhos vêm de forge.config.json na raiz do projeto (ou defaults abaixo):
+// Paths come from forge.config.json at the project root (or the defaults below):
 //   { "bricks": "...", "recipes": "...", "out": "...", "enforceGenerated": false }
 //
 //   Include:  <!-- include: doc-checklist -->
@@ -14,9 +14,9 @@ const DEFAULTS = {
   bricks: ".claude/forge/bricks",
   recipes: ".claude/forge/recipes",
   out: ".claude/commands",
-  archive: ".claude/forge/_archive", // soft-delete: recipe + bricks exclusivos vão pra cá (versionado)
-  enforceGenerated: false, // true = todo arquivo gerado precisa de recipe (proíbe edição "na mão")
-  deletePolicy: "soft",    // "soft" = move pro archive (recuperável) · "hard" = apaga de vez
+  archive: ".claude/forge/_archive", // soft-delete target: recipe + exclusive bricks land here (versioned)
+  enforceGenerated: false, // true = every generated file must have a recipe (forbids hand-made skills)
+  deletePolicy: "soft",    // "soft" = move to archive (recoverable) · "hard" = delete permanently
 };
 
 const INCLUDE = /<!--\s*include:\s*([^\s|]+)\s*(?:\|\s*([^]*?)\s*)?-->/g;
@@ -29,12 +29,12 @@ export function loadConfig(root) {
   return { ...DEFAULTS, ...user };
 }
 
-// Paths de brick incluídos por um texto de recipe (sem .md). Base do ref-count.
+// Brick paths included by a recipe's text (without .md). Basis for ref-counting.
 export function includesOf(text) {
   return [...text.matchAll(INCLUDE)].map((m) => m[1].trim());
 }
 
-// Mapa brick-path → Set(skills) que o incluem, sobre as recipes ATIVAS.
+// Map brick-path → Set(skills) that include it, across the ACTIVE recipes.
 export function brickConsumers(root, cfg = loadConfig(root)) {
   const recipesAbs = join(root, cfg.recipes);
   const map = {};
@@ -68,11 +68,11 @@ function compose(name, cfg, root, errors) {
   const { fm, body } = splitFm(raw);
   const out = body.replace(INCLUDE, (_, p, rawP) => {
     const file = join(bricksAbs, p.trim() + ".md");
-    if (!existsSync(file)) { errors.push(`[${name}] include de brick inexistente: ${p.trim()}`); return `‹MISSING BRICK: ${p.trim()}›`; }
+    if (!existsSync(file)) { errors.push(`build error: [${name}] include of missing brick: ${p.trim()}`); return `‹MISSING BRICK: ${p.trim()}›`; }
     const params = parseParams(rawP);
     let b = splitFm(readFileSync(file, "utf8").replace(/\r\n/g, "\n")).body;
     b = b.replace(/\{\{\s*([\w-]+)\s*\}\}/g, (_, k) => {
-      if (!(k in params)) { errors.push(`[${name}] brick ${p.trim()} requer {{${k}}} não fornecido pela recipe`); return `‹NO ${k}›`; }
+      if (!(k in params)) { errors.push(`build error: [${name}] brick ${p.trim()} requires {{${k}}}, not provided by the recipe`); return `‹NO ${k}›`; }
       return params[k];
     });
     return b.trim();
@@ -81,12 +81,12 @@ function compose(name, cfg, root, errors) {
   return head + out.replace(/\s*$/, "") + "\n";
 }
 
-// mode: "build" | "check". Retorna { ok, drift, orphans, errors }.
+// mode: "build" | "check". Returns { ok, drift, orphans, errors, count, written }.
 export function run({ root = process.cwd(), mode = "build" } = {}) {
   const cfg = loadConfig(root);
   const recipesAbs = join(root, cfg.recipes);
   const outAbs = join(root, cfg.out);
-  if (!existsSync(recipesAbs)) return { ok: false, errors: [`sem diretório de recipes: ${cfg.recipes}`], drift: 0, orphans: 0 };
+  if (!existsSync(recipesAbs)) return { ok: false, errors: [`no recipes directory: ${cfg.recipes}`], drift: 0, orphans: 0 };
 
   const names = readdirSync(recipesAbs).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md"));
   const errors = [];
@@ -98,7 +98,7 @@ export function run({ root = process.cwd(), mode = "build" } = {}) {
     const dest = join(outAbs, name + ".md");
     if (mode === "check") {
       const cur = existsSync(dest) ? readFileSync(dest, "utf8").replace(/\r\n/g, "\n") : null;
-      if (cur !== built) { drift++; errors.push(`DRIFT: ${cfg.out}/${name}.md fora de sincronia com a recipe`); }
+      if (cur !== built) { drift++; errors.push(`drift: ${cfg.out}/${name}.md is out of sync with its recipe`); }
     } else {
       toWrite.push([dest, built]);
     }
@@ -109,12 +109,12 @@ export function run({ root = process.cwd(), mode = "build" } = {}) {
     const recipeNames = new Set(names);
     for (const f of readdirSync(outAbs).filter((f) => f.endsWith(".md"))) {
       const n = basename(f, ".md");
-      if (!recipeNames.has(n)) { orphans++; errors.push(`ORPHAN: ${cfg.out}/${n}.md sem recipe (enforceGenerated)`); }
+      if (!recipeNames.has(n)) { orphans++; errors.push(`orphan: ${cfg.out}/${n}.md has no recipe (enforceGenerated)`); }
     }
   }
 
-  // Erro de composição → não grava nada (não deixa arquivo corrompido).
-  const composeErrors = errors.some((e) => /MISSING BRICK|requer \{\{/.test(e));
+  // Composition errors (missing brick/param) → write nothing (never leave a corrupt output).
+  const composeErrors = errors.some((e) => e.startsWith("build error:"));
   if (mode === "build" && !composeErrors) {
     for (const [dest, built] of toWrite) { mkdirSync(dirname(dest), { recursive: true }); writeFileSync(dest, built); }
   }

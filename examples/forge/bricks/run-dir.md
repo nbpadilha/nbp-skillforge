@@ -1,13 +1,13 @@
 ---
 piece: run-dir
-summary: Cria a pasta de trabalho da execução. Variância = parâmetro, não cópia.
+summary: Creates the run's working folder. Variation = a parameter, not a copy.
 ---
-### Pasta de trabalho
+### Working folder
 
-No início, crie a pasta desta execução:
+At the start, create this run's folder:
 
 ```bash
 RUN_DIR=$(run-dir {{skill}} "$DESC" {{flags}})
 ```
 
-A lógica (slug, timestamp, rastreio) mora no script — a skill **não** a redescreve.
+The logic (slug, timestamp, tracking) lives in the script — the skill does **not** restate it.
