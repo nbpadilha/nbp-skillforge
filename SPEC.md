@@ -25,6 +25,18 @@ without a recipe is left untouched (and, with `enforceGenerated`, flagged as an 
 - **Brick:** its own frontmatter (`piece`, `summary`, `guarantees-not` recommended) is
   **dropped** on expansion — only the body is inlined.
 
+## Conformance (SKILL.md standard)
+When `conformance` is on (default), `build`/`check` validate a recipe's frontmatter against the
+agentskills SKILL.md standard — but only the fields that are **present** (a recipe without
+frontmatter, e.g. a slash-command, is never flagged):
+- `name`: lowercase `a-z`/`0-9` segments joined by single hyphens (`^[a-z0-9]+(-[a-z0-9]+)*$`),
+  1–64 chars — no leading/trailing or doubled `-`, no spaces/uppercase.
+- `description`: present means non-empty and ≤1024 chars.
+A violation is a **build error** (nothing is written, like a missing brick) and fails `check`.
+Set `"conformance": false` to disable. Optional fields (`license`, `metadata`, `allowed-tools`, …)
+pass through untouched. The reader is minimal (zero-dep, not a YAML parser): it validates single-line
+scalars (quotes are stripped); multi-line block scalars (`|`/`>`) are not length-checked.
+
 ## EOL
 Output is always LF. `check` is CR-insensitive (no false positives from CRLF on Windows).
 A `.gitattributes` with `eol=lf` for `forge/**` and the output dir is recommended.

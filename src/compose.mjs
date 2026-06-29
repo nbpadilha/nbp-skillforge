@@ -17,7 +17,29 @@ const DEFAULTS = {
   archive: ".claude/forge/_archive", // soft-delete target: recipe + exclusive bricks land here (versioned)
   enforceGenerated: false, // true = every generated file must have a recipe (forbids hand-made skills)
   deletePolicy: "soft",    // "soft" = move to archive (recoverable) · "hard" = delete permanently
+  conformance: true,       // validate name/description against the SKILL.md standard when present
 };
+
+// agentskills SKILL.md spec: name is lowercase a-z/0-9 segments joined by single hyphens.
+const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+// Minimal, zero-dep field reader: first matching line, value trimmed and unquoted. NOT a YAML
+// parser — validates only single-line name/description (the standard's required scalar fields);
+// block scalars (`|`/`>`) are out of scope. `fm` is already CRLF-normalized to LF by compose().
+const unquote = (v) => (v.match(/^"(.*)"$/) || v.match(/^'(.*)'$/) || [, v])[1];
+function validateConformance(skill, fm, errors) {
+  const nameM = fm.match(/^name:[ \t]*(.*?)[ \t]*$/m);
+  if (nameM) {
+    const v = unquote(nameM[1]);
+    if (!NAME_RE.test(v) || v.length > 64)
+      errors.push(`conformance: [${skill}] name "${v}" must be lowercase a-z/0-9 in single-hyphen segments (no leading/trailing/doubled '-'), 1–64 chars`);
+  }
+  const descM = fm.match(/^description:[ \t]*(.*?)[ \t]*$/m);
+  if (descM) {
+    const v = unquote(descM[1]);
+    if (v.length === 0) errors.push(`conformance: [${skill}] description must not be empty`);
+    else if (v.length > 1024) errors.push(`conformance: [${skill}] description must be ≤1024 chars (got ${v.length})`);
+  }
+}
 
 const INCLUDE = /<!--\s*include:\s*([^\s|]+)\s*(?:\|\s*([^]*?)\s*)?-->/g;
 const BANNER = (name, recipes) =>
@@ -80,6 +102,7 @@ function compose(name, cfg, root, errors) {
   const bricksAbs = join(root, cfg.bricks);
   const raw = readFileSync(join(root, cfg.recipes, name + ".md"), "utf8").replace(/\r\n/g, "\n");
   const { fm, body } = splitFm(raw);
+  if (cfg.conformance && fm !== null) validateConformance(name, fm, errors);
   const out = body.replace(INCLUDE, (_, p, rawP) => {
     const file = join(bricksAbs, p.trim() + ".md");
     if (!existsSync(file)) { errors.push(`build error: [${name}] include of missing brick: ${p.trim()}`); return `‹MISSING BRICK: ${p.trim()}›`; }
@@ -127,11 +150,12 @@ export function run({ root = process.cwd(), mode = "build" } = {}) {
     }
   }
 
-  // Composition errors (missing brick/param) → write nothing (never leave a corrupt output).
-  const composeErrors = errors.some((e) => e.startsWith("build error:"));
-  if (mode === "build" && !composeErrors) {
+  // Blocking errors (missing brick/param, or a conformance violation) → write nothing
+  // (never emit a corrupt or non-standard output). All-or-nothing, like the existing build.
+  const blocking = errors.some((e) => e.startsWith("build error:") || e.startsWith("conformance:"));
+  if (mode === "build" && !blocking) {
     for (const [dest, built] of toWrite) { mkdirSync(dirname(dest), { recursive: true }); writeFileSync(dest, built); }
   }
 
-  return { ok: errors.length === 0, drift, orphans, errors, count: names.length, written: mode === "build" && !composeErrors ? toWrite.length : 0 };
+  return { ok: errors.length === 0, drift, orphans, errors, count: names.length, written: mode === "build" && !blocking ? toWrite.length : 0 };
 }

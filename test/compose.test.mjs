@@ -138,6 +138,87 @@ test("build: CRLF in recipe/brick sources is normalized to LF in output", () => 
   } finally { cleanup(root); }
 });
 
+// ── conformance gate (agentskills SKILL.md standard) ─────────────────────────
+const confRecipe = (name, desc) => `---\nname: ${name}\ndescription: ${desc}\n---\n# x\n\nbody\n`;
+
+for (const [label, name] of [
+  ["uppercase", "Feature"],
+  ["doubled hyphen", "a--b"],
+  ["leading hyphen", "-a"],
+  ["trailing hyphen", "a-"],
+  ["space", "a b"],
+  ["65 chars", "a".repeat(65)],
+]) {
+  test(`conformance: invalid name (${label}) → build error, nothing written`, () => {
+    const root = makeRoot({ recipes: { x: confRecipe(name, "ok desc") } });
+    try {
+      const r = run({ root, mode: "build" });
+      assert.equal(r.ok, false, `expected failure for name "${name}"`);
+      assert.equal(r.written, 0);
+      assert.ok(r.errors.some((e) => e.startsWith("conformance:") && /name/.test(e)));
+      assert.equal(has(outFile(root, "x")), false);
+    } finally { cleanup(root); }
+  });
+}
+
+test("conformance: empty and over-long description → error", () => {
+  const empty = makeRoot({ recipes: { x: "---\nname: ok\ndescription:\n---\n# x\nbody\n" } });
+  const long = makeRoot({ recipes: { x: confRecipe("ok", "d".repeat(1025)) } });
+  try {
+    const r1 = run({ root: empty, mode: "build" });
+    assert.equal(r1.ok, false);
+    assert.ok(r1.errors.some((e) => /description must not be empty/.test(e)));
+    const r2 = run({ root: long, mode: "build" });
+    assert.equal(r2.ok, false);
+    assert.ok(r2.errors.some((e) => /description must be ≤1024/.test(e)));
+  } finally { cleanup(empty); cleanup(long); }
+});
+
+test("conformance: valid name/description build cleanly", () => {
+  const root = makeRoot({ recipes: { "my-skill": confRecipe("my-skill", "A fine description.") } });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.join("; "));
+    assert.equal(r.written, 1);
+  } finally { cleanup(root); }
+});
+
+test("conformance: quoted values are accepted (name: \"my-skill\")", () => {
+  const root = makeRoot({ recipes: { x: `---\nname: "my-skill"\ndescription: 'A quoted description.'\n---\n# x\nbody\n` } });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.join("; "));
+    assert.equal(r.written, 1);
+  } finally { cleanup(root); }
+});
+
+test("conformance: CRLF recipe with empty description is still flagged (fm normalized first)", () => {
+  const root = makeRoot({ recipes: { x: "---\r\nname: ok\r\ndescription:\r\n---\r\n# x\r\nbody\r\n" } });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => /description must not be empty/.test(e)), "CR must not smuggle past the empty check");
+  } finally { cleanup(root); }
+});
+
+test("conformance: a recipe WITHOUT frontmatter is not flagged (slash-command case)", () => {
+  const root = makeRoot({ recipes: { plain: "# plain\n\nno frontmatter here\n" } });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.join("; "));
+    assert.ok(!r.errors.some((e) => e.startsWith("conformance:")));
+  } finally { cleanup(root); }
+});
+
+test("conformance: can be disabled via config (conformance:false)", () => {
+  const root = makeRoot({ config: { conformance: false }, recipes: { x: confRecipe("BadName", "d") } });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, "disabled gate must not flag");
+    assert.equal(r.written, 1);
+  } finally { cleanup(root); }
+});
+
 test("check: detects drift when the generated file is hand-edited", () => {
   const root = makeRoot({
     bricks: { b: "canonical body" },

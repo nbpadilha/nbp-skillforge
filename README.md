@@ -84,11 +84,13 @@ Skills are generated, so you never hand-edit the output. Manage them through the
   "out": ".claude/commands",
   "archive": ".claude/forge/_archive",
   "deletePolicy": "soft",
-  "enforceGenerated": false
+  "enforceGenerated": false,
+  "conformance": true
 }
 ```
 - **`deletePolicy`** — `soft` (move to `_archive/`, recoverable) or `hard` (delete).
 - **`enforceGenerated`** — when `true`, `check` requires every output file to have a recipe, forbidding hand-made/edited skills (forge-only guarantee).
+- **`conformance`** — when `true` (default), `build`/`check` also validate a recipe's frontmatter against the [agentskills](https://github.com/agentskills/agentskills) SKILL.md standard (`name` lowercase-with-hyphens ≤64 chars; non-empty `description` ≤1024) so a non-standard skill fails *here*, not when the agent platform rejects it. Only validates fields that are present; set `false` to disable.
 
 ## Why this exists
 The open [agentskills](https://github.com/agentskills/agentskills) standard defines the portable `SKILL.md` format — but has **no composition/includes**. Linters validate the spec, not content drift between a fragment and the skill. Prompt-templating tools (Jinja, LangChain) compose prompts, not skills. `nbp-forge` fills the gap: **deterministic composition + a drift-gate on top of the standard.** See [`SETUP.md`](SETUP.md) for the #1 pitfall (tooling that tells you to edit the *generated* file) and [`SECURITY.md`](SECURITY.md) for the shared-brick blast radius.
