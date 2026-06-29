@@ -52,6 +52,8 @@ npx nbp-forge help                # all commands; `help <command>` for one
 ```
 From a clone of this repo, the CLI is `node bin/cli.mjs <cmd>`. A complete runnable project lives in [`examples/`](examples/) — try `npx nbp-forge build --root examples`.
 
+> **CLI-only.** nbp-forge is a command-line tool, not a library: there is no public programmatic API and **no TypeScript types are shipped**. Drive it with the `forge` commands above (or your `package.json` scripts / CI), not via `import`.
+
 ## Pre-commit hook (optional)
 Install a hook that runs the drift-gate **and** a basic secret scan before every commit:
 ```bash
