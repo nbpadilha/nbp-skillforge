@@ -2,5 +2,7 @@
   "bricks": "forge/bricks",
   "recipes": "forge/recipes",
   "out": "commands",
-  "enforceGenerated": true
+  "archive": "forge/_archive",
+  "enforceGenerated": true,
+  "deletePolicy": "soft"
 }

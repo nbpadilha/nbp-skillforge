@@ -14,7 +14,9 @@ const DEFAULTS = {
   bricks: ".claude/forge/bricks",
   recipes: ".claude/forge/recipes",
   out: ".claude/commands",
+  archive: ".claude/forge/_archive", // soft-delete: recipe + bricks exclusivos vão pra cá (versionado)
   enforceGenerated: false, // true = todo arquivo gerado precisa de recipe (proíbe edição "na mão")
+  deletePolicy: "soft",    // "soft" = move pro archive (recuperável) · "hard" = apaga de vez
 };
 
 const INCLUDE = /<!--\s*include:\s*([^\s|]+)\s*(?:\|\s*([^]*?)\s*)?-->/g;
@@ -25,6 +27,25 @@ export function loadConfig(root) {
   const p = join(root, "forge.config.json");
   const user = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : {};
   return { ...DEFAULTS, ...user };
+}
+
+// Paths de brick incluídos por um texto de recipe (sem .md). Base do ref-count.
+export function includesOf(text) {
+  return [...text.matchAll(INCLUDE)].map((m) => m[1].trim());
+}
+
+// Mapa brick-path → Set(skills) que o incluem, sobre as recipes ATIVAS.
+export function brickConsumers(root, cfg = loadConfig(root)) {
+  const recipesAbs = join(root, cfg.recipes);
+  const map = {};
+  if (!existsSync(recipesAbs)) return map;
+  for (const f of readdirSync(recipesAbs).filter((f) => f.endsWith(".md"))) {
+    const skill = basename(f, ".md");
+    for (const b of includesOf(readFileSync(join(recipesAbs, f), "utf8"))) {
+      (map[b] ??= new Set()).add(skill);
+    }
+  }
+  return map;
 }
 
 const splitFm = (txt) => {
