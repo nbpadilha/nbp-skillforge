@@ -16,6 +16,14 @@ All notable changes to this project are documented here. The format is based on
   differs. An identical re-build leaves the working tree clean (no mtime churn) and `written` is an
   honest count. Build reports `N written, M unchanged`. `run()` returns `{ written, unchanged, plan }`.
 
+### Docs
+- SPEC gains an **Authoring a brick** walkthrough (create → own-your-heading → parameterize →
+  reference) plus a **brick-frontmatter mini-schema** (`piece`/`summary`/`kind`/`guarantees-not` —
+  advisory, dropped on expansion, never validated). Documents the heading convention (a brick owns
+  its heading; the body is inlined verbatim/trimmed, recipes don't wrap it) and that bricks have no
+  command (drop a `.md`, include it, ref-count tracks consumers). README points authors to it; the
+  `examples/forge/run-dir.md` brick now demonstrates the full frontmatter as a live reference.
+
 ## [0.4.0] - 2026-06-29
 Security & robustness hardening from a 4-reviewer adversarial gate (opus + sonnet + codex/gpt-5.5 + agy).
 

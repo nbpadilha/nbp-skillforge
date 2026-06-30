@@ -107,6 +107,8 @@ Skills are generated, so you never hand-edit the output. Manage them through the
 | `forge restore <skill>` | bring a removed skill (and its bricks) back |
 | `forge gc [--apply]` | find/archive **orphan bricks** (used by nobody) |
 
+**Bricks aren't in this table** — they're plain files, not a managed command: create `bricks/<path>.md`, include it from a recipe, and the ref-count tracks consumers automatically (`forge gc` archives any nobody includes). See [**Authoring a brick**](SPEC.md#authoring-a-brick) for the body/heading convention and frontmatter fields.
+
 **Removing a skill never deletes a shared brick.** Ownership is decided by reference count: a brick used by exactly one skill is *owned* by it; a brick used by several belongs to none and is never touched. Removed items are **soft-deleted to `_archive/`** (versioned, so `forge restore` — or plain git — gets them back). Set `"deletePolicy": "hard"` if you prefer permanent deletes.
 
 ## Config — `forge.config.json`

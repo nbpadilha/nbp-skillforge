@@ -22,8 +22,47 @@ without a recipe is left untouched (and, with `enforceGenerated`, flagged as an 
 ## Frontmatter
 - **Recipe:** the frontmatter (`name`, `description`, …) is passed verbatim to the generated
   file (compatible with the agentskills standard). The banner goes right after the closing `---`.
-- **Brick:** its own frontmatter (`piece`, `summary`, `guarantees-not` recommended) is
-  **dropped** on expansion — only the body is inlined.
+- **Brick:** its own frontmatter is **dropped** on expansion — only the body is inlined. The fields
+  are **advisory metadata for humans/agents reading the brick; the engine never validates them**
+  (only a recipe's `name`/`description` are validated — see Conformance). Recommended fields:
+
+  | field | meaning |
+  |---|---|
+  | `piece` | the brick's stable id (usually equals its path/filename) |
+  | `summary` | one line: what this brick contributes when included |
+  | `kind` | optional tag for how it's used (e.g. `step`, `checklist`, `contract`) |
+  | `guarantees-not` | optional: limits the brick explicitly does **not** promise (so a recipe author doesn't assume more than it delivers) |
+
+  Unknown fields are allowed and ignored. Since the whole block is dropped, nothing here reaches the
+  generated file.
+
+## Authoring a brick
+You don't need to read the engine to author. A brick is just a Markdown file whose **body** gets
+inlined where a recipe includes it.
+
+1. **Create it** — there is no `forge new-brick`; drop a file at `bricks/<path>.md` (nested is fine:
+   `bricks/core/run-dir.md` → include as `core/run-dir`). Its ref-count starts at 0 until a recipe
+   includes it; `forge list` shows consumers and `forge gc` archives bricks nobody includes.
+2. **Own your heading.** The body is inlined **verbatim** (trimmed of surrounding blank lines), with
+   **no wrapper added** — the brick is responsible for its own heading and structure. If a section
+   heading belongs in the output, put it *inside the brick* (e.g. start the body with `### Working
+   folder`); recipes must **not** wrap or re-number the include. This keeps the same brick rendering
+   identically across every skill that includes it.
+3. **Parameterize variation.** Anything that differs per skill is a `{{param}}` the recipe passes —
+   never a forked copy of the brick (the golden rule). A `{{param}}` with no value from the recipe is
+   a build error.
+4. **Reference it** from a recipe and build:
+   ```md
+   <!-- recipes/fix.md -->
+   <!-- include: core/run-dir | skill=fix; flags=--prefix fix -->
+   ```
+   ```bash
+   forge build --dry-run   # preview which skills this brick edit would change
+   forge build             # write them
+   ```
+A complete worked example ships in [`examples/forge/`](examples/forge/): the brick
+`bricks/run-dir.md` (which carries its own `### Working folder` heading) is included by both
+`recipes/feature.md` and `recipes/fix.md` with different parameters.
 
 ## Conformance (SKILL.md standard)
 When `conformance` is on (default), `build`/`check` validate a recipe's frontmatter against the
