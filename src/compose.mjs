@@ -131,8 +131,10 @@ function compose(name, cfg, root, errors) {
   return head + out.replace(/\s*$/, "") + "\n";
 }
 
-// mode: "build" | "check". Returns { ok, drift, orphans, errors, count, written }.
-export function run({ root = process.cwd(), mode = "build" } = {}) {
+// mode: "build" | "check". dryRun (build only): compose + classify, write NOTHING.
+// Returns { ok, drift, orphans, errors, count, written, unchanged, plan }.
+// `plan` (build mode) is [{ name, status }] with status "create" | "change" | "same".
+export function run({ root = process.cwd(), mode = "build", dryRun = false } = {}) {
   const cfg = loadConfig(root);
   const recipesAbs = join(root, cfg.recipes);
   const outAbs = join(root, cfg.out);
@@ -153,17 +155,22 @@ export function run({ root = process.cwd(), mode = "build" } = {}) {
 
   const names = readdirSync(recipesAbs).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md"));
   const errors = [];
-  const toWrite = [];
+  const plan = []; // build mode: [{ name, dest, built, status }] — status drives skip-if-unchanged
   let drift = 0;
 
   for (const name of names) {
-    const built = compose(name, cfg, root, errors);
+    const built = compose(name, cfg, root, errors); // always LF (compose normalizes its inputs)
     const dest = join(outAbs, name + ".md");
+    const raw = existsSync(dest) ? readFileSync(dest, "utf8") : null;
     if (mode === "check") {
-      const cur = existsSync(dest) ? readFileSync(dest, "utf8").replace(/\r\n/g, "\n") : null;
+      // Drift-gate is CR-insensitive: a CRLF checkout (git autocrlf) is NOT a false positive.
+      const cur = raw === null ? null : raw.replace(/\r\n/g, "\n");
       if (cur !== built) { drift++; errors.push(`drift: ${cfg.out}/${name}.md is out of sync with its recipe`); }
     } else {
-      toWrite.push([dest, built]);
+      // Build compares RAW bytes so it stays the source of the "output is always LF" guarantee:
+      // a CRLF-on-disk output differs from the LF `built`, so it is rewritten (healed), not skipped.
+      // Only a byte-identical (LF) file is "same" → the skip-if-unchanged no-op.
+      plan.push({ name, dest, built, status: raw === null ? "create" : raw !== built ? "change" : "same" });
     }
   }
 
@@ -179,9 +186,21 @@ export function run({ root = process.cwd(), mode = "build" } = {}) {
   // Blocking errors (missing brick/param, or a conformance violation) → write nothing
   // (never emit a corrupt or non-standard output). All-or-nothing, like the existing build.
   const blocking = errors.some((e) => e.startsWith("build error:") || e.startsWith("conformance:"));
-  if (mode === "build" && !blocking) {
-    for (const [dest, built] of toWrite) { mkdirSync(dirname(dest), { recursive: true }); writeFileSync(dest, built); }
+  let written = 0;
+  if (mode === "build" && !blocking && !dryRun) {
+    // Skip-if-unchanged: only touch a file whose content actually differs. An identical re-build
+    // leaves the working tree clean (no spurious mtime churn) and makes `written` an honest count.
+    for (const { dest, built, status } of plan) {
+      if (status === "same") continue;
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, built);
+      written++;
+    }
   }
 
-  return { ok: errors.length === 0, drift, orphans, errors, count: names.length, written: mode === "build" && !blocking ? toWrite.length : 0 };
+  const unchanged = mode === "build" ? plan.filter((p) => p.status === "same").length : 0;
+  return {
+    ok: errors.length === 0, drift, orphans, errors, count: names.length, written, unchanged,
+    plan: mode === "build" ? plan.map(({ name, status }) => ({ name, status })) : undefined,
+  };
 }

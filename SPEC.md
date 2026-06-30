@@ -38,10 +38,17 @@ pass through untouched. The reader is minimal (zero-dep, not a YAML parser): it 
 scalars (quotes are stripped); multi-line block scalars (`|`/`>`) are not length-checked.
 
 ## EOL
-Output is always LF. `check` is CR-insensitive (no false positives from CRLF on Windows).
-A `.gitattributes` with `eol=lf` for `forge/**` and the output dir is recommended.
+Output is always LF. The two gates treat line endings differently **by design**: `build` compares
+raw bytes, so a generated file that drifted to CRLF (a Windows checkout/editor) is **rewritten back
+to LF** — `build` is what upholds the LF guarantee. `check` is CR-insensitive, so that same CRLF
+file is **not** a false drift positive in CI. (Skip-if-unchanged still applies: a byte-identical LF
+output is left untouched.) A `.gitattributes` with `eol=lf` for `forge/**` and the output dir is recommended.
 
 ## Lifecycle & ownership
+- `build` writes each generated file **only when its composed content changed** (skip-if-unchanged):
+  an identical re-build leaves the tree clean and reports `N written, M unchanged`. `build --dry-run`
+  composes and prints the plan (`+ create` / `~ change` / `= unchanged`) **without writing** — a
+  preview of a recipe/brick edit before it touches disk. `check` is the read-only drift-gate.
 - A brick's **owner** is decided by reference count: used by exactly one skill → owned by it;
   used by several → owned by none (never touched on removal).
 - `remove` soft-deletes the recipe + the skill's exclusively-owned bricks to `archive/`.

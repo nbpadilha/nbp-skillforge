@@ -8,7 +8,7 @@ import { create, remove, restore, gc, rename, init, list, importFile } from "../
 import { installHooks } from "../src/hooks.mjs";
 
 const HELP = {
-  build:   "build [--root <dir>]                 generate every skill from its recipe + bricks",
+  build:   "build [--dry-run] [--root <dir>]     generate every skill (--dry-run: preview, write nothing)",
   check:   "check [--root <dir>]                 drift-gate: exit 1 if any output diverged/orphaned",
   init:    "init [--root <dir>]                  scaffold forge.config.json + dirs + a sample skill",
   list:    "list [--root <dir>]                  show skills → bricks and per-brick ref-count (blast radius)",
@@ -32,7 +32,7 @@ function usage(cmd) {
 const argv = process.argv.slice(2);
 const die = (msg) => { console.error("✗ " + msg); process.exit(2); };
 const value = (a, i) => { const v = argv[i]; if (v === undefined || v.startsWith("-")) die(`${a} requires a value`); return v; };
-let root = process.cwd(), hard = false, apply = false, force = false, name, wantHelp = false, wantVersion = false;
+let root = process.cwd(), hard = false, apply = false, force = false, name, wantHelp = false, wantVersion = false, dryRun = false;
 const pos = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -41,6 +41,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--hard") hard = true;
   else if (a === "--apply") apply = true;
   else if (a === "--force") force = true;
+  else if (a === "--dry-run") dryRun = true;
   else if (a === "--help" || a === "-h") wantHelp = true;
   else if (a === "--version" || a === "-v") wantVersion = true;
   else if (a.startsWith("-")) die(`unknown option: ${a}`);
@@ -68,8 +69,18 @@ function finish(r) {
 
 switch (cmd) {
   case "build": {
-    const r = run({ root, mode: "build" });
-    finish({ ...r, msg: r.ok ? `build: ${r.written} file(s) generated.` : "build aborted (errors above)." });
+    const r = run({ root, mode: "build", dryRun });
+    if (dryRun) {
+      if (r.ok) {
+        const sym = { create: "+", change: "~", same: "=" };
+        for (const { name, status } of r.plan) console.log(`  ${sym[status]} ${name}${status === "same" ? "  (unchanged)" : ""}`);
+        const create = r.plan.filter((p) => p.status === "create").length;
+        const change = r.plan.filter((p) => p.status === "change").length;
+        console.log(`dry-run: ${create} to create, ${change} to change, ${r.unchanged} unchanged (nothing written).`);
+      }
+      finish({ ...r, msg: r.ok ? undefined : "build aborted (errors above)." });
+    }
+    finish({ ...r, msg: r.ok ? `build: ${r.written} written, ${r.unchanged} unchanged.` : "build aborted (errors above)." });
     break;
   }
   case "check": {

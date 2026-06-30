@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { run } from "../src/compose.mjs";
-import { makeRoot, read, readRaw, has, outFile, cleanup, write } from "./helpers.mjs";
+import { makeRoot, read, readRaw, has, outFile, recipe, brick, cleanup, write } from "./helpers.mjs";
 
 test("build: simple include inlines the brick body", () => {
   const root = makeRoot({
@@ -285,6 +285,112 @@ test("check: CRLF in the generated file is NOT a false drift positive", () => {
     const r = run({ root, mode: "check" });
     assert.equal(r.ok, true, "CRLF must not register as drift");
     assert.equal(r.drift, 0);
+  } finally { cleanup(root); }
+});
+
+test("build: skip-if-unchanged — a re-build writes nothing and leaves `written` honest", () => {
+  const root = makeRoot({
+    bricks: { b: "stable body" },
+    recipes: { s: "---\nname: s\n---\n# s\n\n<!-- include: b -->\n" },
+  });
+  try {
+    const first = run({ root, mode: "build" });
+    assert.equal(first.written, 1);
+    assert.equal(first.unchanged, 0);
+    assert.deepEqual(first.plan, [{ name: "s", status: "create" }]);
+
+    // Second build of identical inputs: nothing on disk changes.
+    const before = readRaw(outFile(root, "s"));
+    const second = run({ root, mode: "build" });
+    assert.equal(second.written, 0, "unchanged output must not be rewritten");
+    assert.equal(second.unchanged, 1);
+    assert.deepEqual(second.plan, [{ name: "s", status: "same" }]);
+    assert.deepEqual(readRaw(outFile(root, "s")), before, "bytes must be byte-identical");
+  } finally { cleanup(root); }
+});
+
+test("build: only the changed skill is rewritten when one recipe edits", () => {
+  const root = makeRoot({
+    bricks: { b: "shared" },
+    recipes: {
+      a: "---\nname: a\n---\n# a\n\n<!-- include: b -->\n",
+      c: "---\nname: c\n---\n# c\n\n<!-- include: b -->\n",
+    },
+  });
+  try {
+    run({ root, mode: "build" });
+    // Edit one recipe; the other is untouched.
+    write(recipe(root, "c"), "---\nname: c\n---\n# c changed\n\n<!-- include: b -->\n");
+    const r = run({ root, mode: "build" });
+    assert.equal(r.written, 1);
+    assert.equal(r.unchanged, 1);
+    assert.equal(r.plan.find((p) => p.name === "a").status, "same");
+    assert.equal(r.plan.find((p) => p.name === "c").status, "change");
+  } finally { cleanup(root); }
+});
+
+test("build: a CRLF-on-disk output is HEALED to LF (not skipped as unchanged)", () => {
+  const root = makeRoot({
+    bricks: { b: "body" },
+    recipes: { h: "---\nname: h\n---\n# h\n\n<!-- include: b -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    // An editor / git autocrlf rewrites the generated output to CRLF.
+    const f = outFile(root, "h");
+    const lf = read(f);
+    write(f, lf.replace(/\n/g, "\r\n"));
+    // check stays CR-insensitive (no false drift) ...
+    assert.equal(run({ root, mode: "check" }).drift, 0, "check must tolerate CRLF");
+    // ... but build restores the LF-only guarantee by rewriting the file.
+    const r = run({ root, mode: "build" });
+    assert.equal(r.written, 1, "CRLF output must be rewritten, not skipped");
+    assert.equal(r.plan.find((p) => p.name === "h").status, "change");
+    assert.equal(read(f), lf, "output is healed back to byte-identical LF");
+    assert.equal(readRaw(f).includes(0x0d), false, "no CR bytes remain");
+  } finally { cleanup(root); }
+});
+
+test("build --dry-run: classifies without writing anything", () => {
+  const root = makeRoot({
+    bricks: { b: "body" },
+    recipes: { d: "---\nname: d\n---\n# d\n\n<!-- include: b -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build", dryRun: true });
+    assert.equal(r.ok, true, r.errors?.join("; "));
+    assert.equal(r.written, 0, "dry-run must never write");
+    assert.equal(has(outFile(root, "d")), false, "no output file is created");
+    assert.deepEqual(r.plan, [{ name: "d", status: "create" }]);
+  } finally { cleanup(root); }
+});
+
+test("build --dry-run: reports `change` and leaves the existing output untouched", () => {
+  const root = makeRoot({
+    bricks: { b: "v1" },
+    recipes: { d: "---\nname: d\n---\n# d\n\n<!-- include: b -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const before = readRaw(outFile(root, "d"));
+    // Change the brick so the next build would differ — but only preview it.
+    write(brick(root, "b"), "v2");
+    const r = run({ root, mode: "build", dryRun: true });
+    assert.equal(r.plan[0].status, "change");
+    assert.equal(r.written, 0);
+    assert.deepEqual(readRaw(outFile(root, "d")), before, "dry-run must not touch the output");
+  } finally { cleanup(root); }
+});
+
+test("build --dry-run: a blocking error fails (not ok), still writes nothing", () => {
+  const root = makeRoot({
+    recipes: { d: "---\nname: d\n---\n# d\n\n<!-- include: missing -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build", dryRun: true });
+    assert.equal(r.ok, false);
+    assert.equal(r.written, 0);
+    assert.equal(has(outFile(root, "d")), false);
   } finally { cleanup(root); }
 });
 

@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- `forge build --dry-run` — composes every skill and prints a per-skill plan
+  (`+ create` / `~ change` / `= unchanged`) **without writing anything**, so you can preview a
+  recipe/brick edit's blast radius before it touches the tree. A blocking build error still fails.
+
+### Changed
+- `build` is now **skip-if-unchanged**: a file is rewritten only when its composed content actually
+  differs. An identical re-build leaves the working tree clean (no mtime churn) and `written` is an
+  honest count. Build reports `N written, M unchanged`. `run()` returns `{ written, unchanged, plan }`.
+
 ## [0.4.0] - 2026-06-29
 Security & robustness hardening from a 4-reviewer adversarial gate (opus + sonnet + codex/gpt-5.5 + agy).
 
