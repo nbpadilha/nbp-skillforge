@@ -41,6 +41,35 @@ Two skills, the same brick, different parameters. One source of truth.
 
 ---
 
+## See it in 60 seconds
+One "set up a run folder" step, shared by two skills — written once, built into both, and the
+drift-gate catching a hand-edit before it reaches anyone.
+
+```bash
+# 1) one brick, reused by both skills — bricks/run-dir.md
+#    "Create runs/{{skill}}/ and write progress there as you go."
+
+# 2) two recipes include it with different params
+#    recipes/fix.md      →  <!-- include: run-dir | skill=fix -->
+#    recipes/feature.md  →  <!-- include: run-dir | skill=feature -->
+
+$ npx nbp-forge build
+✔ build: 2 file(s) generated.        # both skills now carry the same step, parameterized
+
+# 3) someone hand-edits a GENERATED file…
+$ echo "rogue tweak" >> .claude/commands/fix.md
+$ npx nbp-forge check
+✗ check failed (1 drift, 0 orphans).
+  • drift: .claude/commands/fix.md is out of sync with its recipe   # ← your CI fails right here
+```
+
+Fix it the right way — edit the **brick**, run `build`, and **both** skills update at once. That's
+the whole idea: one source of truth, and a gate that makes it stick.
+
+> Try the runnable version now: `npx nbp-forge build --root examples` then `npx nbp-forge check --root examples`.
+
+---
+
 ## Quick start
 Installed from npm (zero runtime dependencies):
 ```bash
