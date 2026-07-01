@@ -5,13 +5,13 @@
 // Zero deps. Hooks run under git's bundled sh (incl. Git for Windows).
 
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, renameSync, rmSync, realpathSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SHIM_MARK = "nbp-forge hook shim";
 
-export function installHooks({ root = process.cwd(), force = false } = {}) {
+export function installHooks({ root = process.cwd(), force = false, onlyRoot = false } = {}) {
   try {
     // The versioned hook shipped with this package; resolve relative to THIS file so it works
     // whether nbp-forge is a clone (./scripts/...) or an installed dep (node_modules/nbp-forge/...).
@@ -22,6 +22,19 @@ export function installHooks({ root = process.cwd(), force = false } = {}) {
     let hooksRel;
     try { hooksRel = execSync("git rev-parse --git-path hooks", { cwd: root, encoding: "utf8" }).trim(); }
     catch { return { ok: false, msg: "not a git repository (run from inside the repo)" }; }
+
+    // `git rev-parse` searches UPWARD, so `root` may belong to a parent repo (monorepo, or a stray
+    // `.git` above `root`). onlyRoot refuses that: install only when `root` IS the repo's worktree
+    // root. Used by `init` (auto-install) so scaffolding a subdir never mutates a parent repo's hooks;
+    // the explicit `install-hooks` command leaves onlyRoot off so a power user can install from a subdir.
+    if (onlyRoot) {
+      let top; try { top = execSync("git rev-parse --show-toplevel", { cwd: root, encoding: "utf8" }).trim(); } catch { top = null; }
+      const canon = (p) => { try { return realpathSync.native(p); } catch { return p; } };
+      if (!top || canon(top) !== canon(root)) {
+        return { ok: false, skipped: true,
+          msg: top ? `${root} is inside a parent git repo (${top}), not its root` : "not a git repository (run from inside the repo)" };
+      }
+    }
     const hooksDir = isAbsolute(hooksRel) ? hooksRel : join(root, hooksRel);
     mkdirSync(hooksDir, { recursive: true });
 
@@ -49,10 +62,16 @@ export function installHooks({ root = process.cwd(), force = false } = {}) {
 # ${SHIM_MARK} — delegates to nbp-forge's versioned hook; do not edit here.
 exec sh ${quoted} "$@"
 `;
+    // Idempotent: our shim already in place byte-for-byte → leave it (no mtime churn), consistent
+    // with build's skip-if-unchanged. Lets callers (e.g. `init`) re-run without noise or rewrites.
+    if (existsSync(dest) && readFileSync(dest, "utf8") === shim) {
+      return { ok: true, dest, bundledHook, backedUp, already: true,
+        msg: `pre-commit hook already installed → ${dest}` };
+    }
     writeFileSync(dest, shim);
     try { chmodSync(dest, 0o755); } catch { /* no-op on Windows; sh runs it anyway */ }
 
-    return { ok: true, dest, bundledHook, backedUp,
+    return { ok: true, dest, bundledHook, backedUp, already: false,
       msg: `installed pre-commit hook → ${dest}` +
         (backedUp ? " (existing hook backed up → pre-commit.local.bak)" : "") +
         `\n  delegates to ${bundledHook}` };

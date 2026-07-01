@@ -73,7 +73,7 @@ the whole idea: one source of truth, and a gate that makes it stick.
 ## Quick start
 Installed from npm (zero runtime dependencies):
 ```bash
-npx nbp-forge init                # scaffold forge.config.json + dirs + a sample skill
+npx nbp-forge init                # scaffold forge.config.json + dirs + a sample skill, and install the pre-commit hook
 npx nbp-forge build  --root .     # generate skills from recipes + bricks
 npx nbp-forge check  --root .     # drift-gate: exit 1 if any output diverged from its recipe (CI, pre-commit)
 npx nbp-forge help                # all commands; `help <command>` for one
@@ -87,8 +87,10 @@ From a clone of this repo, the CLI is `node bin/cli.mjs <cmd>`. A complete runna
 > end-to-end, idempotent setup runbook (install → init → author → build → gate → CI) with a
 > verify-by-execution gate after every step, so the whole adoption runs autonomously.
 
-## Pre-commit hook (optional)
-Install a hook that runs the drift-gate **and** a basic secret scan before every commit:
+## Pre-commit hook
+`forge init` **installs this hook for you** (best-effort — it never fails init and never clobbers an
+existing hook; pass `--no-hooks` to skip). It runs the drift-gate **and** a basic secret scan before
+every commit. To install it on its own (e.g. in a repo you didn't `init`, or after `--no-hooks`):
 ```bash
 npx nbp-forge install-hooks   # in a project that depends on nbp-forge
 npm run hooks:install         # equivalent, from a clone of this repo
@@ -102,7 +104,7 @@ Skills are generated, so you never hand-edit the output. Manage them through the
 
 | Command | What it does |
 |---|---|
-| `forge init` | scaffold `forge.config.json` + dirs + a sample skill (idempotent; never overwrites) |
+| `forge init` | scaffold `forge.config.json` + dirs + a sample skill, and install the pre-commit hook (idempotent; never overwrites; `--no-hooks` to skip) |
 | `forge list` | show each skill → the bricks it uses, and per-brick ref-count (blast radius) |
 | `forge new <skill>` | scaffold a new recipe |
 | `forge import <file>` | onboard an existing `SKILL.md`/command as a recipe (verbatim; strips a prior GENERATED banner). `--name` overrides; `--force` overwrites. Run `forge build` after. |

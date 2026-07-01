@@ -1,6 +1,8 @@
 // lifecycle: new / remove / restore / gc / rename — plus ref-counted soft-delete.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { create, remove, restore, gc, rename, init, list, importFile } from "../src/lifecycle.mjs";
 import { run } from "../src/compose.mjs";
@@ -261,6 +263,79 @@ test("init: skips the sample when bricks/recipes/out are not three distinct dirs
     assert.equal(has(join(root, "recipes/hello.md")), false, "must not seed when roles collide");
     assert.equal(has(join(root, "bricks/footer.md")), false);
   } finally { cleanup(root); }
+});
+
+const preCommit = (root) => join(root, ".git", "hooks", "pre-commit");
+
+test("init: installs the pre-commit drift-gate hook in a git repo", () => {
+  const root = bareRoot();
+  try {
+    execSync("git init -q", { cwd: root });
+    const r = init(root);
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.hook?.ok, true, "hook reported installed");
+    assert.equal(has(preCommit(root)), true, "pre-commit written");
+    assert.match(read(preCommit(root)), /nbp-forge hook shim/);
+  } finally { cleanup(root); }
+});
+
+test("init: --no-hooks ({ hooks:false }) never touches .git/hooks", () => {
+  const root = bareRoot();
+  try {
+    execSync("git init -q", { cwd: root });
+    const r = init(root, { hooks: false });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.hook, null, "hook step skipped entirely");
+    assert.equal(has(preCommit(root)), false, "no hook installed");
+  } finally { cleanup(root); }
+});
+
+test("init: hook install is best-effort — a non-git dir still initializes cleanly", () => {
+  const root = bareRoot(); // no git init
+  try {
+    const r = init(root);
+    assert.equal(r.ok, true, "init must not fail just because the hook can't install");
+    assert.equal(r.hook.ok, false);
+    assert.match(r.hook.msg, /not a git repository/);
+    assert.equal(has(join(root, "forge.config.json")), true, "scaffolding still happened");
+  } finally { cleanup(root); }
+});
+
+test("init: re-run detects the hook as already installed (idempotent, no rewrite)", () => {
+  const root = bareRoot();
+  try {
+    execSync("git init -q", { cwd: root });
+    init(root);
+    const r2 = init(root);
+    assert.equal(r2.ok, true, r2.msg);
+    assert.equal(r2.hook.already, true, "existing shim detected, left in place");
+  } finally { cleanup(root); }
+});
+
+test("init: never clobbers a foreign pre-commit hook", () => {
+  const root = bareRoot();
+  try {
+    execSync("git init -q", { cwd: root });
+    write(preCommit(root), "#!/bin/sh\necho someone elses hook\n");
+    const r = init(root);
+    assert.equal(r.ok, true, "init still succeeds around a foreign hook");
+    assert.equal(r.hook.ok, false, "foreign hook is not replaced");
+    assert.match(read(preCommit(root)), /someone elses hook/, "foreign hook left untouched");
+  } finally { cleanup(root); }
+});
+
+test("init: from a non-git subdir never installs into a PARENT git repo", () => {
+  const parent = bareRoot();
+  try {
+    execSync("git init -q", { cwd: parent });
+    const child = join(parent, "packages", "skills");
+    mkdirSync(child, { recursive: true });
+    const r = init(child); // child is NOT its own repo; a naive walk-up would hit parent/.git
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.hook.ok, false, "auto-install declines for a subdir of a parent repo");
+    assert.match(r.hook.msg, /parent git repo/);
+    assert.equal(has(preCommit(parent)), false, "the parent repo's hooks must stay untouched");
+  } finally { cleanup(parent); }
 });
 
 test("list: reports skills→bricks and per-brick ref-count (blast radius)", () => {

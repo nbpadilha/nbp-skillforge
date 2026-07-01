@@ -10,7 +10,7 @@ import { installHooks } from "../src/hooks.mjs";
 const HELP = {
   build:   "build [--dry-run] [--root <dir>]     generate every skill (--dry-run: preview, write nothing)",
   check:   "check [--root <dir>]                 drift-gate: exit 1 if any output diverged/orphaned",
-  init:    "init [--root <dir>]                  scaffold forge.config.json + dirs + a sample skill",
+  init:    "init [--no-hooks] [--root <dir>]     scaffold config + dirs + a sample skill, and install the pre-commit hook",
   list:    "list [--root <dir>]                  show skills → bricks and per-brick ref-count (blast radius)",
   new:     "new <skill> [--root <dir>]           scaffold a new recipe, then build",
   import:  "import <file> [--name <n>] [--force] [--root <dir>]  onboard an existing SKILL.md/command as a recipe",
@@ -32,7 +32,7 @@ function usage(cmd) {
 const argv = process.argv.slice(2);
 const die = (msg) => { console.error("✗ " + msg); process.exit(2); };
 const value = (a, i) => { const v = argv[i]; if (v === undefined || v.startsWith("-")) die(`${a} requires a value`); return v; };
-let root = process.cwd(), hard = false, apply = false, force = false, name, wantHelp = false, wantVersion = false, dryRun = false;
+let root = process.cwd(), hard = false, apply = false, force = false, name, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false;
 const pos = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -42,6 +42,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--apply") apply = true;
   else if (a === "--force") force = true;
   else if (a === "--dry-run") dryRun = true;
+  else if (a === "--no-hooks") noHooks = true;
   else if (a === "--help" || a === "-h") wantHelp = true;
   else if (a === "--version" || a === "-v") wantVersion = true;
   else if (a.startsWith("-")) die(`unknown option: ${a}`);
@@ -88,7 +89,7 @@ switch (cmd) {
     finish({ ...r, msg: r.ok ? `check: ${r.count} in sync.` : `check failed (${r.drift || 0} drift, ${r.orphans || 0} orphans).` });
     break;
   }
-  case "init":    finish(init(root)); break;
+  case "init":    finish(init(root, { hooks: !noHooks })); break;
   case "list": {
     const r = list(root);
     if (!r.ok) finish(r);

@@ -19,6 +19,11 @@ All notable changes to this project are documented here. The format is based on
 - `build` is now **skip-if-unchanged**: a file is rewritten only when its composed content actually
   differs. An identical re-build leaves the working tree clean (no mtime churn) and `written` is an
   honest count. Build reports `N written, M unchanged`. `run()` returns `{ written, unchanged, plan }`.
+- **`init` now installs the pre-commit hook** (drift-gate + secret scan) so a fresh npm consumer gets
+  it in one step instead of a separate `install-hooks` call. Best-effort by design: it never fails
+  `init` and never clobbers an existing hook (a foreign or non-git case is just reported); opt out with
+  `init --no-hooks`. `installHooks()` is now idempotent — an identical shim already in place is left
+  untouched (no mtime churn), mirroring `build`'s skip-if-unchanged, and reports `already: true`.
 
 ### Fixed
 - **Generated banner** now points at a command that actually exists: `run \`npx nbp-forge build\``

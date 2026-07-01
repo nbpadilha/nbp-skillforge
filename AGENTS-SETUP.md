@@ -64,7 +64,9 @@ npx nbp-forge --version    # prints "nbp-forge <X.Y.Z>"
 forge init
 ```
 This writes `forge.config.json` only if absent, then seeds a sample skill **only** when there are no
-recipes yet and the role dirs are distinct and unused — so it never overwrites.
+recipes yet and the role dirs are distinct and unused — so it never overwrites. It also installs the
+pre-commit hook best-effort (skip with `forge init --no-hooks`; it never fails init or clobbers an
+existing hook). In a git repo, step 6 below is already done for you.
 **Verify:** `forge.config.json` exists and the `bricks` / `recipes` / `out` / `archive` dirs were created.
 
 ### 3 — Configure paths
@@ -131,7 +133,8 @@ forge list               # review each skill → its bricks, and per-brick ref-c
 or a recipe changed without a rebuild — **edit the recipe/brick, never the output**, then `forge build`.
 
 ### 7 — Wire the gate into the workflow
-**Do:**
+**Do:** `forge init` (step 2) already installed the pre-commit hook. If you ran `--no-hooks`, or this
+isn't the dir you `init`ed, install it explicitly:
 ```bash
 forge install-hooks      # pre-commit: drift-gate + a basic secret scan (thin shim, logic is versioned)
 ```

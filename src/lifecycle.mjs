@@ -5,6 +5,7 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync, renameSync, realpathSync, statSync } from "node:fs";
 import { join, dirname, basename, relative, resolve, sep } from "node:path";
 import { loadConfig, run, includesOf, brickConsumers, splitFm, GENERATED_BANNER_RE } from "./compose.mjs";
+import { installHooks } from "./hooks.mjs";
 
 const mdFiles = (dir) =>
   // Normalize separators: readdirSync({recursive}) yields OS-native backslashes on Windows, but
@@ -195,7 +196,9 @@ export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
 // Purely additive & idempotent: writes forge.config.json only if absent (never overwrites,
 // so custom config keys are safe), seeds a sample only when there are no recipes yet, and
 // builds only that fresh sample (an already-initialized project is left exactly as-is).
-export function init(root = process.cwd()) {
+// Also installs the pre-commit drift-gate hook best-effort (opt out with { hooks:false }) so a
+// fresh npm consumer gets it in one step — never fatal, never clobbering (see the hook note below).
+export function init(root = process.cwd(), { hooks = true } = {}) {
   const cfg = loadConfig(root);
   const P = paths(root, cfg);
   const created = [];
@@ -234,9 +237,17 @@ export function init(root = process.cwd()) {
     build = run({ root, mode: "build" }); // build only the sample we just seeded
   }
 
-  return { ok: build ? build.ok : true, created, build, msg:
+  // Best-effort pre-commit hook install so a fresh consumer gets the drift-gate without a second
+  // command. NON-FATAL and NON-CLOBBERING: no --force (a foreign pre-commit is left untouched and
+  // merely reported), and a non-git dir just reports back — init's success never hinges on it.
+  const hook = hooks ? installHooks({ root, onlyRoot: true }) : null;
+  const hookNote = !hook ? ""
+    : hook.ok ? (hook.already ? "" : `\n  ✔ installed the pre-commit hook (drift-gate + secret scan).`)
+    : `\n  · pre-commit hook not installed (${hook.msg}). Run \`npx nbp-forge install-hooks\` when ready.`;
+
+  return { ok: build ? build.ok : true, created, build, hook, msg:
     (created.length ? `initialized forge: ${created.join(", ")}` : "forge already initialized (nothing to scaffold)") +
-    `. Edit ${cfg.recipes}/, then \`forge build\`.` };
+    `. Edit ${cfg.recipes}/, then \`forge build\`.` + hookNote };
 }
 
 // ── list (skills → bricks, with ref-count / blast radius) ─────────────────────
