@@ -165,6 +165,34 @@ test("gc: README in bricks/ is documentation, never flagged as an orphan", () =>
   } finally { cleanup(root); }
 });
 
+test("gc: reserves repo meta docs (nested/lowercase/LICENSE) but still flags content-named orphans", () => {
+  const root = makeRoot({
+    bricks: {
+      "sub/README": "# nested docs",   // nested + reserved
+      "changelog": "# lower reserved", // lowercase reserved basename
+      LICENSE: "MIT",                  // another reserved basename
+      security: "orphan content brick",// NOT reserved — plausible content name
+      "readme-notes": "orphan content",// anchored: not a bare `readme`, so not reserved
+      used: "used",
+    },
+    recipes: { r: "---\nname: r\n---\n# r\n\n<!-- include: used -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const dry = gc(root, { apply: false });
+    // Reserved docs never appear as orphans, at any depth or case…
+    for (const doc of ["sub/README", "changelog", "LICENSE"])
+      assert.equal(dry.orphans.includes(doc), false, `${doc} must not be an orphan`);
+    // …but genuinely-unused content bricks still are (no over-reservation).
+    assert.deepEqual([...dry.orphans].sort(), ["readme-notes", "security"], "content orphans still detected");
+
+    gc(root, { apply: true });
+    assert.equal(has(brick(root, "sub/README")), true, "--apply must never archive a reserved doc");
+    assert.equal(has(brick(root, "LICENSE")), true, "--apply must never archive LICENSE");
+    assert.equal(has(brick(root, "security")), false, "--apply must archive a real orphan");
+  } finally { cleanup(root); }
+});
+
 test("rename: generates the new command and removes the old one", () => {
   const root = makeRoot({
     bricks: { b: "body" },

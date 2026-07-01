@@ -167,8 +167,15 @@ export function restore(skill, { root = process.cwd() } = {}) {
 export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
   const P = paths(root);
   const consumers = brickConsumers(root, P.cfg);
-  // A file named README (any case, at any depth) is documentation, never a brick — never an orphan.
-  const isDoc = (b) => /(^|\/)readme$/i.test(b);
+  // Repo meta / community-health files dropped under bricks/ are documentation, never bricks —
+  // so gc never reports or archives them. Matched by canonical basename, at any depth, any case.
+  // The set is kept deliberately TIGHT: only names that are overwhelmingly repo-meta, not skill
+  // content. Ambiguous names that are plausible brick *content* (`security`, `notice`, `authors`,
+  // `funding`, …) are left OUT on purpose so a genuinely-orphan brick is still caught — over-
+  // reserving would silently hide it from gc. Reserving too little only soft-deletes (recoverable);
+  // reserving too much defeats gc's job, so we err toward the smaller, unambiguous set.
+  const DOC_BASENAMES = /^(readme|changelog|contributing|code_of_conduct|license|licence)$/i;
+  const isDoc = (b) => DOC_BASENAMES.test(String(b).split("/").pop());
   const orphans = mdFiles(P.bricks).map((f) => String(f).replace(/\.md$/, "")).filter((b) => !consumers[b] && !isDoc(b));
   if (apply && orphans.length) {
     const policy = (hard || P.cfg.deletePolicy === "hard") ? "hard" : "soft"; // fail closed to soft

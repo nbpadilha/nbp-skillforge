@@ -25,9 +25,13 @@ All notable changes to this project are documented here. The format is based on
   (was `run \`forge build\``, which only works if the bin is on `PATH`/globally linked). The banner is
   the first line of every generated skill and its core instruction — it must be copy-pasteable from a
   plain `devDependency` install.
-- **`gc` no longer flags `bricks/README.md` as an orphan.** A file named `README` (any case, any depth
-  under `bricks/`) is documentation, never a brick — so `gc`/`gc --apply` never reports or archives it.
-  Adds a regression test.
+- **`gc` no longer flags repo meta / community-health docs under `bricks/` as orphans.** A file whose
+  basename is `README`, `CHANGELOG`, `CONTRIBUTING`, `CODE_OF_CONDUCT`, or `LICENSE`/`LICENCE` (any
+  case, any depth) is documentation, never a brick — so `gc`/`gc --apply` never reports or archives it.
+  The set is kept deliberately tight: ambiguous names that are plausible brick *content* (`SECURITY`,
+  `NOTICE`, `AUTHORS`, `FUNDING`, …) are **not** reserved, so a genuinely-unused `security.md` is still
+  detected. Regression tests cover nested/lowercase docs and prove content-named bricks aren't
+  over-reserved.
 
 ### Docs
 - SPEC gains an **Authoring a brick** walkthrough (create → own-your-heading → parameterize →
