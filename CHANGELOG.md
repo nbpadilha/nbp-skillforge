@@ -37,8 +37,18 @@ All notable changes to this project are documented here. The format is based on
   `NOTICE`, `AUTHORS`, `FUNDING`, …) are **not** reserved, so a genuinely-unused `security.md` is still
   detected. Regression tests cover nested/lowercase docs and prove content-named bricks aren't
   over-reserved.
+- **`--help` / `--version` now win over an unknown flag.** `nbp-forge --help --bogus` prints help and
+  exits 0 (was exit 2 "unknown option"); an unknown flag still fails when help/version isn't requested.
+- **Invalid `forge.config.json` fails cleanly.** `loadConfig` now throws a user-facing
+  `forge.config.json: invalid JSON (…)` (surfaced by the CLI as `✗ …`, exit 1) instead of dumping a raw
+  `SyntaxError` + stack trace.
 
 ### Docs
+- README gained a **60-second demo** quickstart section.
+- Doc-drift swept and fixed: README lifecycle table now shows `remove`/`gc` `--hard` and `new`'s
+  auto-build and a `forge` = `npx nbp-forge` shorthand note; SPEC documents the `gc` doc-reservation,
+  the `init` hook install + `--no-hooks`, the `-->`-in-param limit, and the same shorthand note;
+  `AGENTS-SETUP.md` replaces an invalid `<<out>>/**` gitattributes placeholder with concrete paths.
 - SPEC gains an **Authoring a brick** walkthrough (create → own-your-heading → parameterize →
   reference) plus a **brick-frontmatter mini-schema** (`piece`/`summary`/`kind`/`guarantees-not` —
   advisory, dropped on expansion, never validated). Documents the heading convention (a brick owns

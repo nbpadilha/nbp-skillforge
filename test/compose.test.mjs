@@ -1,7 +1,8 @@
 // compose / build / check — the load-bearing engine.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { run } from "../src/compose.mjs";
+import { join } from "node:path";
+import { run, loadConfig } from "../src/compose.mjs";
 import { makeRoot, read, readRaw, has, outFile, recipe, brick, cleanup, write } from "./helpers.mjs";
 
 test("build: simple include inlines the brick body", () => {
@@ -408,5 +409,36 @@ test("check: enforceGenerated flags an orphan command (no recipe)", () => {
     assert.equal(r.ok, false);
     assert.equal(r.orphans, 1);
     assert.ok(r.errors.some((e) => e.startsWith("orphan:") && /stray/.test(e)));
+  } finally { cleanup(root); }
+});
+
+test("config: invalid forge.config.json throws a clean, user-facing error (no raw SyntaxError)", () => {
+  const root = makeRoot({ recipes: { a: "---\nname: a\n---\n# a\nbody\n" } });
+  try {
+    write(join(root, "forge.config.json"), "{ not valid json");
+    assert.throws(() => loadConfig(root), /forge\.config\.json: invalid JSON/);
+    // The engine surfaces it through run() (which loads config) rather than crashing opaquely.
+    assert.throws(() => run({ root, mode: "check" }), /forge\.config\.json: invalid JSON/);
+  } finally { cleanup(root); }
+});
+
+test("build/check: a missing recipes directory is a clean error, not a crash", () => {
+  const root = makeRoot({ config: { recipes: "nope" } }); // no recipes fixture → dir never created
+  try {
+    const r = run({ root, mode: "check" });
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => /no recipes directory: nope/.test(e)));
+  } finally { cleanup(root); }
+});
+
+test("params: a bare key without `=` substitutes to an empty string (builds ok)", () => {
+  const root = makeRoot({
+    bricks: { b: "before[{{k}}]after" },
+    recipes: { r: "---\nname: r\n---\n# r\n\n<!-- include: b | k -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.join("; "));
+    assert.match(read(outFile(root, "r")), /before\[\]after/, "{{k}} → empty string for a valueless key");
   } finally { cleanup(root); }
 });

@@ -87,8 +87,9 @@ existing hook). In a git repo, step 6 below is already done for you.
   clobber source).
 - Keep `conformance: true` (validates `name`/`description` against the SKILL.md standard).
 - Consider `enforceGenerated: true` later, once every output has a recipe (forbids hand-made skills).
-- Recommended: a `.gitattributes` line `<<out>>/** eol=lf` and `forge/** eol=lf` (output is LF;
-  `build` heals CRLF→LF, `check` tolerates CRLF, but pinning EOL avoids noise).
+- Recommended: `.gitattributes` lines pinning EOL to LF for your `out` and forge dirs — e.g. with the
+  defaults, `.claude/commands/** eol=lf` and `.claude/forge/** eol=lf` (substitute your configured
+  paths). Output is LF; `build` heals CRLF→LF and `check` tolerates CRLF, but pinning EOL avoids noise.
 **Verify:** `forge check` runs without a `config error:` about nested/equal roles.
 
 ### 4 — Author or onboard skills
