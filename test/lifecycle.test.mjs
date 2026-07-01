@@ -149,6 +149,22 @@ test("gc: detects an orphan brick, and archives it with --apply", () => {
   } finally { cleanup(root); }
 });
 
+test("gc: README in bricks/ is documentation, never flagged as an orphan", () => {
+  const root = makeRoot({
+    bricks: { README: "# bricks docs", used: "used" },
+    recipes: { r: "---\nname: r\n---\n# r\n\n<!-- include: used -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const dry = gc(root, { apply: false });
+    assert.deepEqual(dry.orphans, [], "README must not be an orphan");
+    assert.equal(has(brick(root, "README")), true, "README must stay put");
+
+    gc(root, { apply: true });
+    assert.equal(has(brick(root, "README")), true, "--apply must never archive README");
+  } finally { cleanup(root); }
+});
+
 test("rename: generates the new command and removes the old one", () => {
   const root = makeRoot({
     bricks: { b: "body" },

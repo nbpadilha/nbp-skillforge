@@ -167,7 +167,9 @@ export function restore(skill, { root = process.cwd() } = {}) {
 export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
   const P = paths(root);
   const consumers = brickConsumers(root, P.cfg);
-  const orphans = mdFiles(P.bricks).map((f) => String(f).replace(/\.md$/, "")).filter((b) => !consumers[b]);
+  // A file named README (any case, at any depth) is documentation, never a brick — never an orphan.
+  const isDoc = (b) => /(^|\/)readme$/i.test(b);
+  const orphans = mdFiles(P.bricks).map((f) => String(f).replace(/\.md$/, "")).filter((b) => !consumers[b] && !isDoc(b));
   if (apply && orphans.length) {
     const policy = (hard || P.cfg.deletePolicy === "hard") ? "hard" : "soft"; // fail closed to soft
     for (const b of orphans) {
