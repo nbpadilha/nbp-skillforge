@@ -15,6 +15,12 @@ All notable changes to this project are documented here. The format is based on
   (`+ create` / `~ change` / `= unchanged`) **without writing anything**, so you can preview a
   recipe/brick edit's blast radius before it touches the tree. A blocking build error still fails.
 
+### Added
+- **Pre-commit private-file guard.** The bundled hook now refuses to commit any staged file that your
+  `.gitignore` covers (i.e. one force-added with `git add -f`) — a generic safety net that stops
+  private/internal files from leaking into a public repo. Verified by a new hook integration test
+  (skipped where `sh` is unavailable).
+
 ### Changed
 - `build` is now **skip-if-unchanged**: a file is rewritten only when its composed content actually
   differs. An identical re-build leaves the working tree clean (no mtime churn) and `written` is an
