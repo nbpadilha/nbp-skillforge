@@ -81,7 +81,7 @@ npx nbp-forge help                # all commands; `help <command>` for one
 ```
 From a clone of this repo, the CLI is `node bin/cli.mjs <cmd>`. A complete runnable project lives in [`examples/`](examples/) — try `npx nbp-forge build --root examples`.
 
-> **CLI-only.** nbp-forge is a command-line tool, not a library: there is no public programmatic API and **no TypeScript types are shipped**. Drive it with the `forge` commands above (or your `package.json` scripts / CI), not via `import`.
+> **CLI-only.** nbp-forge is a command-line tool, not a library: there is no public programmatic API and **no TypeScript types are shipped**. Drive it with the commands above (or your `package.json` scripts / CI), not via `import`.
 
 > **Setting it up with an agent?** Hand your AI agent [`AGENTS-SETUP.md`](AGENTS-SETUP.md) — an
 > end-to-end, idempotent setup runbook (install → init → author → build → gate → CI) with a
@@ -100,18 +100,19 @@ It's a **thin shim** that delegates to the versioned [`scripts/hooks/pre-commit`
 More examples to copy into your own repo: a CI workflow that runs the drift-gate ([`examples/.github/workflows/forge-check.yml`](examples/.github/workflows/forge-check.yml)) and an optional Claude Code hook that stops the agent from hand-editing a generated skill ([`examples/claude-code/`](examples/claude-code/)).
 
 ## Full lifecycle (safe by default)
-Skills are generated, so you never hand-edit the output. Manage them through the forge:
+Skills are generated, so you never hand-edit the output. Manage them through the forge
+(`forge` below = `npx nbp-forge`, or `nbp-forge` if installed globally, or `node bin/cli.mjs` from a clone):
 
 | Command | What it does |
 |---|---|
 | `forge init` | scaffold `forge.config.json` + dirs + a sample skill, and install the pre-commit hook (idempotent; never overwrites; `--no-hooks` to skip) |
 | `forge list` | show each skill → the bricks it uses, and per-brick ref-count (blast radius) |
-| `forge new <skill>` | scaffold a new recipe |
+| `forge new <skill>` | scaffold a new recipe, then build |
 | `forge import <file>` | onboard an existing `SKILL.md`/command as a recipe (verbatim; strips a prior GENERATED banner). `--name` overrides; `--force` overwrites. Run `forge build` after. |
 | `forge rename <old> <new>` | rename a skill (regenerates, removes the stale output) |
-| `forge remove <skill>` | **soft-delete** the recipe + the bricks **only that skill owns**; shared bricks stay (you're told which and why) |
+| `forge remove <skill> [--hard]` | **soft-delete** the recipe + the bricks **only that skill owns**; shared bricks stay (you're told which and why). `--hard` deletes instead of archiving |
 | `forge restore <skill>` | bring a removed skill (and its bricks) back |
-| `forge gc [--apply]` | find/archive **orphan bricks** (used by nobody) |
+| `forge gc [--apply] [--hard]` | find/archive **orphan bricks** (used by nobody); `--hard` deletes instead of archiving |
 
 **Bricks aren't in this table** — they're plain files, not a managed command: create `bricks/<path>.md`, include it from a recipe, and the ref-count tracks consumers automatically (`forge gc` archives any nobody includes). See [**Authoring a brick**](SPEC.md#authoring-a-brick) for the body/heading convention and frontmatter fields.
 

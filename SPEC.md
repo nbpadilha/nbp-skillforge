@@ -8,6 +8,8 @@ A skill is a **recipe** (`recipes/<name>.md`) that points to **bricks**
 The forge only governs skills that **have a recipe**. Migration is incremental: anything
 without a recipe is left untouched (and, with `enforceGenerated`, flagged as an orphan).
 
+> `forge` below = `npx nbp-forge` (or `nbp-forge` if installed globally; `node bin/cli.mjs` from a clone).
+
 ## Include directive
 ```
 <!-- include: <brick-path> [| k=v; k2=v2 ...] -->
@@ -18,6 +20,8 @@ without a recipe is left untouched (and, with `enforceGenerated`, flagged as an 
   (Any other `\x` is left untouched, so Windows-style paths usually need no escaping.)
 - In the brick body, `{{k}}` is replaced by the value. Missing parameter → **build error**
   (nothing is written). Missing brick → **build error**.
+- A parameter value cannot contain the literal sequence `-->` (it closes the HTML comment that
+  carries the directive) — same as any HTML comment. Use a placeholder in the brick if you need one.
 
 ## Frontmatter
 - **Recipe:** the frontmatter (`name`, `description`, …) is passed verbatim to the generated
@@ -91,11 +95,16 @@ output is left untouched.) A `.gitattributes` with `eol=lf` for `forge/**` and t
 - A brick's **owner** is decided by reference count: used by exactly one skill → owned by it;
   used by several → owned by none (never touched on removal).
 - `remove` soft-deletes the recipe + the skill's exclusively-owned bricks to `archive/`.
-  `restore` brings them back. `gc` archives orphan bricks (ref-count 0).
-- `deletePolicy: "soft" | "hard"` controls archive-vs-delete.
+  `restore` brings them back. `gc` archives orphan bricks (ref-count 0) — except a file whose
+  basename is a repo meta doc (`README`/`CHANGELOG`/`CONTRIBUTING`/`CODE_OF_CONDUCT`/`LICENSE`, any
+  case, any depth under `bricks/`), which is documentation and is never flagged or archived.
+- `deletePolicy: "soft" | "hard"` controls archive-vs-delete; `remove`/`gc` also take `--hard` to force
+  a permanent delete for that one call.
 - `init` scaffolds a project: it writes `forge.config.json` only if absent, then seeds a sample
   skill **only** when there are no recipes yet, the bricks/recipes/out roles are three distinct
   dirs, and none of the sample's targets already exist — so it is idempotent and never overwrites.
+  It also installs the pre-commit hook best-effort (drift-gate + secret scan; non-fatal, never
+  clobbers an existing hook, and only into the repo whose root is `root`); opt out with `--no-hooks`.
 - `list` is read-only: per skill, the bricks it includes; per brick, its ref-count and consumers.
 - `import <file>` onboards an existing skill **deterministically** (no LLM): it writes a recipe
   from the file's frontmatter + body verbatim, stripping a leading GENERATED banner so a re-import

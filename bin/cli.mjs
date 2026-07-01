@@ -32,7 +32,7 @@ function usage(cmd) {
 const argv = process.argv.slice(2);
 const die = (msg) => { console.error("✗ " + msg); process.exit(2); };
 const value = (a, i) => { const v = argv[i]; if (v === undefined || v.startsWith("-")) die(`${a} requires a value`); return v; };
-let root = process.cwd(), hard = false, apply = false, force = false, name, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false;
+let root = process.cwd(), hard = false, apply = false, force = false, name, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false, unknownFlag = null;
 const pos = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -45,7 +45,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--no-hooks") noHooks = true;
   else if (a === "--help" || a === "-h") wantHelp = true;
   else if (a === "--version" || a === "-v") wantVersion = true;
-  else if (a.startsWith("-")) die(`unknown option: ${a}`);
+  else if (a.startsWith("-")) unknownFlag ??= a; // defer: let --help/--version win over a bad flag
   else pos.push(a);
 }
 const cmd = pos[0] || "build";
@@ -61,6 +61,7 @@ if (wantVersion) {
   }
 }
 if (wantHelp) { usage(pos[0]); process.exit(0); }
+if (unknownFlag) die(`unknown option: ${unknownFlag}`); // only now — --help/--version already won
 
 function finish(r) {
   if (r.msg) console[r.ok ? "log" : "error"]((r.ok ? "✔ " : "✗ ") + r.msg);
@@ -68,6 +69,11 @@ function finish(r) {
   process.exit(r.ok ? 0 : 1);
 }
 
+// A user-facing thrown error (e.g. loadConfig on invalid forge.config.json) becomes a clean
+// `✗ <msg>` exit 1. An UNEXPECTED error (a real bug) is re-thrown so it keeps its full stack trace
+// and crashes loudly — the catch must not mask programming errors. Successful cases call
+// finish()/process.exit() before reaching the catch.
+try {
 switch (cmd) {
   case "build": {
     const r = run({ root, mode: "build", dryRun });
@@ -111,4 +117,9 @@ switch (cmd) {
   case "help":    usage(pos[1]); process.exit(0);
   default:
     console.error(`unknown command: ${cmd}`); usage(); process.exit(2);
+}
+} catch (e) {
+  if (!e?.userFacing) throw e; // unexpected/programming error → preserve the stack trace, crash loudly
+  console.error("✗ " + e.message);
+  process.exit(1);
 }
