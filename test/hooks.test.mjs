@@ -94,10 +94,25 @@ test("install-hooks: onlyRoot refuses to install into a parent repo from a subdi
   } finally { cleanup(root); }
 });
 
-test("hook: private-file guard blocks a force-added git-ignored file", { skip: shOk ? false : "sh unavailable" }, () => {
+const enableGuard = (root) => execSync("git config nbp-forge.guardIgnored true", { cwd: root });
+
+test("hook: private-file guard is OPT-IN — off by default, a force-added ignored file is allowed", { skip: shOk ? false : "sh unavailable" }, () => {
+  const root = bareRoot();
+  try {
+    gitInit(root); // guard NOT enabled
+    writeFileSync(join(root, ".gitignore"), "secrets/\n");
+    mkdirSync(join(root, "secrets"), { recursive: true });
+    writeFileSync(join(root, "secrets", "leak.md"), "PRIVATE\n");
+    execSync("git add -f secrets/leak.md", { cwd: root });
+    assert.doesNotThrow(() => runHook(root), "with the guard off (default), the hook must not block");
+  } finally { cleanup(root); }
+});
+
+test("hook: private-file guard blocks a force-added git-ignored file (when enabled)", { skip: shOk ? false : "sh unavailable" }, () => {
   const root = bareRoot();
   try {
     gitInit(root);
+    enableGuard(root);
     writeFileSync(join(root, ".gitignore"), "secrets/\n");
     writeFileSync(join(root, "ok.txt"), "fine\n");
     mkdirSync(join(root, "secrets"), { recursive: true });
@@ -117,10 +132,11 @@ test("hook: private-file guard blocks a force-added git-ignored file", { skip: s
   } finally { cleanup(root); }
 });
 
-test("hook: private-file guard does NOT flag a MODIFIED tracked file that matches a pattern", { skip: shOk ? false : "sh unavailable" }, () => {
+test("hook: enabled guard does NOT flag a MODIFIED tracked file that matches a pattern", { skip: shOk ? false : "sh unavailable" }, () => {
   const root = bareRoot();
   try {
     gitInit(root);
+    enableGuard(root);
     execSync("git config user.email t@t", { cwd: root });
     execSync("git config user.name t", { cwd: root });
     writeFileSync(join(root, ".gitignore"), "*.log\n");
