@@ -15,15 +15,6 @@ All notable changes to this project are documented here. The format is based on
   (`+ create` / `~ change` / `= unchanged`) **without writing anything**, so you can preview a
   recipe/brick edit's blast radius before it touches the tree. A blocking build error still fails.
 
-### Added
-- **Pre-commit private-file guard (opt-in).** Enable per-repo with `git config nbp-forge.guardIgnored
-  true` and the bundled hook refuses to commit any staged file your `.gitignore` covers — however it
-  got staged (`git add -f`, an IDE, a merge, or `git mv` into an ignored path) — a general safety net
-  that keeps private/internal files out of a (public) repo. **Off by default**: it isn't part of the
-  forge, so it never fires for a consumer unless they turn it on. Verified by hook integration tests
-  (opt-in off allows, enabled blocks, and a modified tracked ignore-matching file is not a false
-  positive; skipped where `sh` is unavailable).
-
 ### Changed
 - `build` is now **skip-if-unchanged**: a file is rewritten only when its composed content actually
   differs. An identical re-build leaves the working tree clean (no mtime churn) and `written` is an
