@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-01
+
 ### Added
 - **`AGENTS-SETUP.md`** — an autonomous end-to-end setup runbook (master prompt) for an AI agent to
   adopt nbp-forge in a project: install → init → configure → author/import → build → drift-gate →
