@@ -1,9 +1,8 @@
 #!/bin/sh
 # nbp-forge pre-commit (VERSIONED source of truth). The .git/hooks/pre-commit is a thin
-# shim that delegates here — so this logic is reviewed in git and never drifts. Gates:
+# shim that delegates here — so this logic is reviewed in git and never drifts. Two gates:
 #   1) secret scan over staged additions (blocks .env files + token-shaped strings)
-#   2) private-file guard — OPT-IN (blocks staged files your .gitignore covers); off by default
-#   3) drift-gate (forge check), when this repo is a forge project
+#   2) drift-gate (forge check), when this repo is a forge project
 # Bypass with `git commit --no-verify` only if you are certain (discouraged).
 
 fail=0
@@ -34,26 +33,7 @@ if [ -n "$hits" ]; then
   fail=1
 fi
 
-# ── 2) private-file guard (OPT-IN) ───────────────────────────────────────────
-# Not part of the forge — a general safety net, OFF by default. Enable it per-repo with:
-#   git config nbp-forge.guardIgnored true
-# Then it refuses any staged file that .gitignore covers — however it got staged (`git add -f`, an
-# IDE, `git apply --cached`, a merge, or `git mv` into an ignored path). `--no-index` checks the rules
-# directly (a staged path is otherwise treated as tracked, so a plain check-ignore wouldn't flag it).
-# Stops private/internal files from leaking into a (public) repo. Only Added/Renamed entries (A/R) are
-# checked — never Modified — so editing a tracked file that merely matches a pattern (e.g. a committed
-# `*.log` fixture) is not a false positive. `-z` end-to-end keeps Unicode/space/quotePath paths intact
-# (never storing NUL in a shell var). Needs git ≥2.0.5 for `--no-index`/`-z` (universal today).
-if [ "$(git config --bool nbp-forge.guardIgnored 2>/dev/null)" = "true" ]; then
-  ignored=$(git diff --cached -z --name-only --diff-filter=AR | git check-ignore -z --no-index --stdin 2>/dev/null | tr '\0' '\n')
-  if [ -n "$ignored" ]; then
-    echo "✗ refusing to commit git-ignored file(s) (matched by .gitignore — likely private/internal):"
-    echo "$ignored" | sed 's/^/    /'
-    fail=1
-  fi
-fi
-
-# ── 3) drift-gate ────────────────────────────────────────────────────────────
+# ── 2) drift-gate ────────────────────────────────────────────────────────────
 # Prefer a repo-defined `forge:check` script (lets a repo point check at a sub-root);
 # else, if the repo root is itself a forge project, run the published CLI.
 if grep -q '"forge:check":' package.json 2>/dev/null; then
