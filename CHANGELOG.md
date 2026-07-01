@@ -20,6 +20,15 @@ All notable changes to this project are documented here. The format is based on
   differs. An identical re-build leaves the working tree clean (no mtime churn) and `written` is an
   honest count. Build reports `N written, M unchanged`. `run()` returns `{ written, unchanged, plan }`.
 
+### Fixed
+- **Generated banner** now points at a command that actually exists: `run \`npx nbp-forge build\``
+  (was `run \`forge build\``, which only works if the bin is on `PATH`/globally linked). The banner is
+  the first line of every generated skill and its core instruction — it must be copy-pasteable from a
+  plain `devDependency` install.
+- **`gc` no longer flags `bricks/README.md` as an orphan.** A file named `README` (any case, any depth
+  under `bricks/`) is documentation, never a brick — so `gc`/`gc --apply` never reports or archives it.
+  Adds a regression test.
+
 ### Docs
 - SPEC gains an **Authoring a brick** walkthrough (create → own-your-heading → parameterize →
   reference) plus a **brick-frontmatter mini-schema** (`piece`/`summary`/`kind`/`guarantees-not` —
