@@ -11,7 +11,9 @@ final self-contained file; `forge check` fails if any generated file drifted fro
 **Never hand-edit generated output.** Files under the configured `out/` directory carry a
 `GENERATED` banner — they are build artifacts. To change one, edit the **recipe**
 (`recipes/<name>.md`) or the **brick** (`bricks/<path>.md`) it includes, then run `forge build`.
-Composition lives in the recipe; bricks do not include other bricks.
+Composition lives in the recipe; bricks do not include other bricks (enforced at build) — except
+inside a fenced code block (```` ``` ```` / `~~~`), where an include directive is never expanded or
+enforced, so a brick can safely document the include syntax as a fenced example.
 
 ## Before you finish a change
 - `node --test` is green (zero-dep `node:test` suite).

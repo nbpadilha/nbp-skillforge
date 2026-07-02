@@ -5,9 +5,10 @@
 // Zero deps. Hooks run under git's bundled sh (incl. Git for Windows).
 
 import { execSync } from "node:child_process";
-import { readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, renameSync, rmSync, realpathSync } from "node:fs";
+import { readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import { join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
+import { canon } from "./paths.mjs";
 
 const SHIM_MARK = "nbp-forge hook shim";
 
@@ -29,7 +30,9 @@ export function installHooks({ root = process.cwd(), force = false, onlyRoot = f
     // the explicit `install-hooks` command leaves onlyRoot off so a power user can install from a subdir.
     if (onlyRoot) {
       let top; try { top = execSync("git rev-parse --show-toplevel", { cwd: root, encoding: "utf8" }).trim(); } catch { top = null; }
-      const canon = (p) => { try { return realpathSync.native(p); } catch { return p; } };
+      // `top`/`root` are always absolute already (root defaults to process.cwd(); the CLI resolves
+      // --root at bin/cli.mjs's arg parse), so canon()'s resolve()-fallback (vs the bare `p` this
+      // local closure used before F-13) is a no-op here — same outcome, one less bespoke closure.
       if (!top || canon(top) !== canon(root)) {
         return { ok: false, skipped: true,
           msg: top ? `${root} is inside a parent git repo (${top}), not its root` : "not a git repository (run from inside the repo)" };

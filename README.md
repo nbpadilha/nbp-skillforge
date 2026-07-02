@@ -54,13 +54,13 @@ drift-gate catching a hand-edit before it reaches anyone.
 #    recipes/feature.md  →  <!-- include: run-dir | skill=feature -->
 
 $ npx nbp-forge build
-✔ build: 2 file(s) generated.        # both skills now carry the same step, parameterized
+✔ build: 2 written, 0 unchanged.     # both skills now carry the same step, parameterized
 
 # 3) someone hand-edits a GENERATED file…
 $ echo "rogue tweak" >> .claude/commands/fix.md
 $ npx nbp-forge check
 ✗ check failed (1 drift, 0 orphans).
-  • drift: .claude/commands/fix.md is out of sync with its recipe   # ← your CI fails right here
+  • drift: .claude/commands/fix.md is out of sync with its recipe (first difference at line 9: expected "", found "rogue tweak")   # ← your CI fails right here
 ```
 
 Fix it the right way — edit the **brick**, run `build`, and **both** skills update at once. That's
@@ -107,9 +107,9 @@ Skills are generated, so you never hand-edit the output. Manage them through the
 |---|---|
 | `forge init` | scaffold `forge.config.json` + dirs + a sample skill, and install the pre-commit hook (idempotent; never overwrites; `--no-hooks` to skip) |
 | `forge list` | show each skill → the bricks it uses, and per-brick ref-count (blast radius) |
-| `forge new <skill>` | scaffold a new recipe, then build |
-| `forge import <file>` | onboard an existing `SKILL.md`/command as a recipe (verbatim; strips a prior GENERATED banner). `--name` overrides; `--force` overwrites. Run `forge build` after. |
-| `forge rename <old> <new>` | rename a skill (regenerates, removes the stale output) |
+| `forge new <skill> [--description <text>]` | scaffold a new recipe, then build (`description:` defaults to `TODO` unless given) |
+| `forge import <file>` | onboard an existing `SKILL.md`/command as a recipe (verbatim; strips a prior GENERATED banner). `--name` overrides; `--force` overwrites; a diverging frontmatter `name:` is rewritten to match. Run `forge build` after. |
+| `forge rename <old> <new>` | rename a skill (regenerates, removes the stale output). Refuses safely — nothing touched — if the new name isn't conformant |
 | `forge remove <skill> [--hard]` | **soft-delete** the recipe + the bricks **only that skill owns**; shared bricks stay (you're told which and why). `--hard` deletes instead of archiving |
 | `forge restore <skill>` | bring a removed skill (and its bricks) back |
 | `forge gc [--apply] [--hard]` | find/archive **orphan bricks** (used by nobody); `--hard` deletes instead of archiving |
@@ -117,6 +117,24 @@ Skills are generated, so you never hand-edit the output. Manage them through the
 **Bricks aren't in this table** — they're plain files, not a managed command: create `bricks/<path>.md`, include it from a recipe, and the ref-count tracks consumers automatically (`forge gc` archives any nobody includes). See [**Authoring a brick**](SPEC.md#authoring-a-brick) for the body/heading convention and frontmatter fields.
 
 **Removing a skill never deletes a shared brick.** Ownership is decided by reference count: a brick used by exactly one skill is *owned* by it; a brick used by several belongs to none and is never touched. Removed items are **soft-deleted to `_archive/`** (versioned, so `forge restore` — or plain git — gets them back). Set `"deletePolicy": "hard"` if you prefer permanent deletes.
+
+## JSON output (`--json`)
+`forge build`/`check`/`list`/`gc` accept `--json`: stdout becomes **only**
+`JSON.stringify(result, null, 2)` — no `✔`/`✗`/`  • ` decorated lines — for scripting/CI. The exit
+code is unchanged (`0` on success, `1`/`2` on failure, same as without the flag). Error paths are
+covered too: an invalid `forge.config.json` or an unknown flag on one of these four commands prints
+`{ "ok": false, "error": "..." }` on stdout (nothing decorated on stderr), so a consumer can always
+parse a result. Lifecycle commands that mutate the tree (`new`/`import`/`remove`/`restore`/`rename`)
+are **out of scope** for `--json` today; the flag is accepted but has no effect on their output.
+
+| Command | Result shape (`JSON.parse`-able) |
+|---|---|
+| `build` / `build --dry-run` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged, plan }` — `plan` is `[{ name, status }]` (`status`: `"create"` \| `"change"` \| `"same"`). No `msg` field. |
+| `check` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged }`. No `msg` field. |
+| `list` | `{ ok, skills, bricks, msg }` — `skills` is `[{ skill, bricks: [name, ...] }]`; `bricks` is `[{ brick, refCount, usedBy: [skill, ...] }]`. |
+| `gc` | `{ ok, orphans, applied, msg }` — `orphans` is `[brick, ...]`; `applied` is `true` only with `--apply`. |
+
+`errors` entries are `{ kind, skill, msg }` (`kind` ∈ `"build"` \| `"conformance"` \| `"drift"` \| `"orphan"` \| `"config"`); `msg` is the same full text the non-json CLI prints.
 
 ## Config — `forge.config.json`
 ```json
@@ -136,6 +154,8 @@ Skills are generated, so you never hand-edit the output. Manage them through the
 
 ## Why this exists
 The open [agentskills](https://github.com/agentskills/agentskills) standard defines the portable `SKILL.md` format — but has **no composition/includes**. Linters validate the spec, not content drift between a fragment and the skill. Prompt-templating tools (Jinja, LangChain) compose prompts, not skills. `nbp-forge` fills the gap: **deterministic composition + a drift-gate on top of the standard.** See [`SETUP.md`](SETUP.md) for the #1 pitfall (tooling that tells you to edit the *generated* file) and [`SECURITY.md`](SECURITY.md) for the shared-brick blast radius.
+
+Visual overview: [`docs/architecture.html`](docs/architecture.html) (open it in a browser).
 
 ## License
 MIT © Nikolas Padilha

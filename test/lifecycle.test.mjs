@@ -20,12 +20,68 @@ test("new: scaffolds a recipe and builds without error", () => {
   } finally { cleanup(root); }
 });
 
+test("new --description: fills the scaffold's description; default stays TODO", () => {
+  const root = makeRoot({});
+  try {
+    const r = create("x", { root, description: "Faz y." });
+    assert.equal(r.ok, true, r.msg);
+    assert.match(read(recipe(root, "x")), /^description: Faz y\.$/m);
+
+    const r2 = create("y", { root });
+    assert.equal(r2.ok, true, r2.msg);
+    assert.match(read(recipe(root, "y")), /^description: TODO$/m);
+  } finally { cleanup(root); }
+});
+
+test("new --description: an embedded newline is rejected (would corrupt the frontmatter)", () => {
+  const root = makeRoot({});
+  try {
+    const r = create("z", { root, description: "line one\nline two" });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /must not contain a newline/);
+    assert.equal(has(recipe(root, "z")), false, "nothing written on rejection");
+  } finally { cleanup(root); }
+});
+
 test("new: refuses to overwrite an existing recipe", () => {
   const root = makeRoot({ recipes: { dup: "---\nname: dup\n---\n# dup\n" } });
   try {
     const r = create("dup", { root });
     assert.equal(r.ok, false);
     assert.match(r.msg, /already exists/);
+  } finally { cleanup(root); }
+});
+
+// ── F-07: an action that succeeds but whose follow-up build fails must say WHY (not a mute ✗) ──
+test("new: an unrelated broken recipe's build failure is surfaced in errors/msg (not swallowed)", () => {
+  const root = makeRoot({ recipes: { broken: "---\nname: broken\n---\n# broken\n\n<!-- include: nao-existe -->\n" } });
+  try {
+    const r = create("valid-skill", { root });
+    assert.equal(r.ok, false, "the follow-up build failed, so ok must be false");
+    assert.equal(has(recipe(root, "valid-skill")), true, "the recipe itself WAS created");
+    assert.ok(r.errors?.some((e) => e.msg.includes("include of missing brick: nao-existe")), "the build's own error must be surfaced");
+    assert.match(r.msg, /recipe created: valid-skill/, "the action's own success text must still be present");
+    assert.match(r.msg, /BUT the follow-up build failed/, "the message must distinguish action-ok from build-failed");
+    // F-14: `command` (the action) and `build` (the follow-up) must be separately inspectable.
+    assert.equal(r.command.ok, true, "the create action itself succeeded");
+    assert.match(r.command.msg, /recipe created: valid-skill/);
+    assert.equal(r.build.ok, false, "the build result is exposed as its own object");
+    assert.ok(r.build.errors.some((e) => e.msg.includes("include of missing brick: nao-existe")));
+  } finally { cleanup(root); }
+});
+
+// ── C8 regression: create/remove/restore/rename must propagate the follow-up build's warnings,
+// not silently drop them ─────────────────────────────────────────────────────────────────────
+test("new: an unrelated recipe's unused-param warning from the follow-up build is surfaced on the result (C8)", () => {
+  const root = makeRoot({
+    bricks: { "run-dir": "Run: static text, no placeholders" },
+    recipes: { existing: "---\nname: existing\n---\n# existing\n\n<!-- include: run-dir | naousado=abc -->\n" },
+  });
+  try {
+    const r = create("hello", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.ok(r.warnings?.some((w) => w.includes("unused param(s): naousado")),
+      "the follow-up build's warning must be on the create() result, not swallowed");
   } finally { cleanup(root); }
 });
 
@@ -88,6 +144,27 @@ test("remove --hard: deletes the recipe + exclusive brick (no archive)", () => {
   } finally { cleanup(root); }
 });
 
+test("remove: an unrelated broken recipe's build failure is surfaced (action still happens)", () => {
+  const root = makeRoot({
+    bricks: { solo: "body" },
+    recipes: {
+      only: "---\nname: only\n---\n# only\n\n<!-- include: solo -->\n",
+      broken: "---\nname: broken\n---\n# broken\n\n<!-- include: nao-existe -->\n",
+    },
+  });
+  try {
+    const r = remove("only", { root });
+    assert.equal(r.ok, false);
+    assert.equal(has(recipe(root, "only")), false, "the remove action itself happened");
+    assert.ok(r.errors?.some((e) => e.msg.includes("include of missing brick: nao-existe")));
+    assert.match(r.msg, /skill "only" removed \(soft\)/);
+    assert.match(r.msg, /BUT the follow-up build failed/);
+    // F-14: `command` (the action) and `build` (the follow-up) must be separately inspectable.
+    assert.equal(r.command.ok, true, "the remove action itself succeeded");
+    assert.equal(r.build.ok, false);
+  } finally { cleanup(root); }
+});
+
 test("remove: unknown skill fails cleanly", () => {
   const root = makeRoot({});
   try {
@@ -114,6 +191,27 @@ test("restore: brings back recipe + exclusive brick and rebuilds", () => {
     assert.equal(has(brick(root, "solo")), true);
     assert.equal(has(outFile(root, "back")), true, "restore rebuilds the command");
     assert.equal(has(archived(root, "back")), false, "archive entry consumed on restore");
+  } finally { cleanup(root); }
+});
+
+test("restore: an unrelated broken recipe's build failure is surfaced (action still happens)", () => {
+  const root = makeRoot({
+    bricks: { solo: "body" },
+    recipes: { back: "---\nname: back\n---\n# back\n\n<!-- include: solo -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    remove("back", { root });
+    write(recipe(root, "broken"), "---\nname: broken\n---\n# broken\n\n<!-- include: nao-existe -->\n");
+    const r = restore("back", { root });
+    assert.equal(r.ok, false);
+    assert.equal(has(recipe(root, "back")), true, "the restore action itself happened");
+    assert.ok(r.errors?.some((e) => e.msg.includes("include of missing brick: nao-existe")));
+    assert.match(r.msg, /skill "back" restored/);
+    assert.match(r.msg, /BUT the follow-up build failed/);
+    // F-14: `command` (the action) and `build` (the follow-up) must be separately inspectable.
+    assert.equal(r.command.ok, true, "the restore action itself succeeded");
+    assert.equal(r.build.ok, false);
   } finally { cleanup(root); }
 });
 
@@ -195,6 +293,237 @@ test("gc: reserves repo meta docs (nested/lowercase/LICENSE) but still flags con
   } finally { cleanup(root); }
 });
 
+// ── F-01: once a would-be-nested include is FLATTENED, gc no longer produces a false orphan ──
+// T4: this test used to be titled "...after removing a brick-in-brick nested include" but its
+// fixture only ever included `inner` DIRECTLY from the recipe — no brick-in-brick ever existed in
+// it, so it proved nothing about the nested→flattened transition its own title claimed to cover.
+// Since brick-in-brick is now UNCONDITIONALLY a build error (F-01/C2 — there is no longer any way
+// to "have" a nested include that builds, fixed or not), the historically meaningful scenario is:
+// a user who used to lean on nesting (outer wraps inner) is now forced to FLATTEN — include BOTH
+// bricks directly from the recipe body — and gc must not falsely orphan either one once flattened.
+test("gc: after flattening a would-be-nested include (recipe includes both bricks directly), neither is a false orphan", () => {
+  const root = makeRoot({
+    bricks: { outer: "Outer content.", inner: "Inner content." },
+    recipes: { demo: "---\nname: demo\n---\n# demo\n\n<!-- include: outer -->\n<!-- include: inner -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.map((e) => e.msg).join("; "));
+    assert.deepEqual(gc(root, { apply: false }).orphans, [], "both bricks are referenced directly (flattened, not nested) from the recipe body");
+  } finally { cleanup(root); }
+});
+
+// ── F-05: an include directive that only appears in a recipe's OWN frontmatter ──
+// must not ref-count the brick — compose() never expands frontmatter, so `gc`/`remove`/`list`
+// must agree with what actually got built (matches the scan surface compose() uses).
+test("gc: a brick referenced only in the recipe's frontmatter is a real orphan (not protected)", () => {
+  const root = makeRoot({
+    bricks: { b: "brick body, never expanded (fm-only reference)", used: "used" },
+    recipes: {
+      r: "---\nname: r\ndescription: d\n<!-- include: b -->\n---\n# r\n\n<!-- include: used -->\n",
+    },
+  });
+  try {
+    const build = run({ root, mode: "build" });
+    assert.equal(build.ok, true, build.errors?.map(e => e.msg).join("; "));
+    assert.deepEqual(gc(root, { apply: false }).orphans, ["b"], "an fm-only include must not protect the brick");
+  } finally { cleanup(root); }
+});
+
+test("remove: a brick referenced only in the recipe's frontmatter is not treated as exclusive", () => {
+  const root = makeRoot({
+    bricks: { b: "brick body" },
+    recipes: { r: "---\nname: r\ndescription: d\n<!-- include: b -->\n---\n# r\n\nNo include in the body.\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const res = remove("r", { root });
+    assert.deepEqual(res.exclusive, [], "an fm-only include must not count as exclusive");
+    assert.equal(has(brick(root, "b")), true, "the brick file must be left untouched");
+  } finally { cleanup(root); }
+});
+
+test("list: a brick referenced only in the recipe's frontmatter is not shown as used by it", () => {
+  const root = makeRoot({
+    bricks: { b: "brick body" },
+    recipes: { r: "---\nname: r\ndescription: d\n<!-- include: b -->\n---\n# r\n\nNo include in the body.\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const res = list(root);
+    assert.equal(res.ok, true, res.msg);
+    assert.deepEqual(res.skills.find((s) => s.skill === "r").bricks, [], "fm-only reference must not appear in blast radius");
+  } finally { cleanup(root); }
+});
+
+// ── F-04: importFile round-trips a source with EMPTY frontmatter, no injected blank line ──
+test("import: a source file with EMPTY frontmatter (---/---) round-trips without an injected blank line", () => {
+  const root = makeRoot({});
+  const src = join(root, "external", "emptyfm.md");
+  write(src, "---\n---\n# emptyfm\n\nbody line\n");
+  try {
+    const r = importFile(src, { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(read(recipe(root, "emptyfm")), "---\n---\n# emptyfm\n\nbody line\n", "no blank line injected between the fences");
+    assert.equal(run({ root, mode: "build" }).ok, true);
+    assert.equal(run({ root, mode: "check" }).ok, true, "the round-tripped recipe must not drift on build");
+  } finally { cleanup(root); }
+});
+
+// ── F-10: remove/gc prune now-empty parent dir(s) left behind by a nested brick ──
+test("remove (soft): a nested exclusive brick's now-empty parent dirs are pruned", () => {
+  const root = makeRoot({
+    bricks: { "core/sub/deep": "deep body" },
+    recipes: { nested: "---\nname: nested\n---\n# nested\n\n<!-- include: core/sub/deep -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    remove("nested", { root });
+    assert.equal(has(join(root, "bricks", "core")), false, "the now-empty core/ (and core/sub) dirs must be pruned");
+    assert.equal(has(join(root, "bricks")), true, "the bricks/ root itself must survive, even empty");
+  } finally { cleanup(root); }
+});
+
+test("remove (soft): pruning stops at a sibling brick that still exists", () => {
+  const root = makeRoot({
+    bricks: { "core/sub/deep": "deep body", "core/other": "sibling body" },
+    recipes: { nested: "---\nname: nested\n---\n# nested\n\n<!-- include: core/sub/deep -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    remove("nested", { root });
+    assert.equal(has(join(root, "bricks", "core", "sub")), false, "core/sub is now empty and must be pruned");
+    assert.equal(has(brick(root, "core/other")), true, "the sibling brick must survive");
+    assert.equal(has(join(root, "bricks", "core")), true, "core/ survives — a sibling brick still lives there");
+  } finally { cleanup(root); }
+});
+
+test("remove --hard: a nested exclusive brick's now-empty parent dirs are pruned", () => {
+  const root = makeRoot({
+    bricks: { "core/sub/deep": "deep body" },
+    recipes: { nested: "---\nname: nested\n---\n# nested\n\n<!-- include: core/sub/deep -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    remove("nested", { root, hard: true });
+    assert.equal(has(join(root, "bricks", "core")), false, "the now-empty core/ dir must be pruned (hard delete too)");
+  } finally { cleanup(root); }
+});
+
+test("gc --apply (soft): a nested orphan brick's now-empty parent dirs are pruned", () => {
+  const root = makeRoot({
+    bricks: { "orph/sub/orphan": "nobody includes me", used: "used" },
+    recipes: { r: "---\nname: r\n---\n# r\n\n<!-- include: used -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    gc(root, { apply: true });
+    assert.equal(has(join(root, "bricks", "orph")), false, "the now-empty orph/ dir must be pruned");
+  } finally { cleanup(root); }
+});
+
+test("gc --apply --hard: a nested orphan brick's now-empty parent dirs are pruned", () => {
+  const root = makeRoot({
+    bricks: { "hard/sub/orphan": "nobody includes me", used: "used" },
+    recipes: { r: "---\nname: r\n---\n# r\n\n<!-- include: used -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    gc(root, { apply: true, hard: true });
+    assert.equal(has(join(root, "bricks", "hard")), false, "the now-empty hard/ dir must be pruned (hard delete too)");
+  } finally { cleanup(root); }
+});
+
+// ── F-08: rename pre-validates the new name against conformance BEFORE touching disk ──
+test("rename: refuses a non-conformant new name — nothing touched, old output survives", () => {
+  const root = makeRoot({
+    bricks: { b: "body" },
+    recipes: { bom: "---\nname: bom\n---\n# bom\n\n<!-- include: b -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    assert.equal(has(outFile(root, "bom")), true);
+    const r = rename("bom", "Ruim", { root });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /rename blocked/);
+    assert.match(r.msg, /not a conformant skill name/);
+    assert.equal(has(recipe(root, "bom")), true, "old recipe must survive");
+    assert.equal(has(recipe(root, "Ruim")), false, "no new recipe created");
+    assert.equal(has(outFile(root, "bom")), true, "old output must survive — nothing deleted");
+  } finally { cleanup(root); }
+});
+
+test("rename: with conformance:false, a non-conformant new name is allowed (existing behavior)", () => {
+  const root = makeRoot({
+    config: { conformance: false },
+    bricks: { b: "body" },
+    recipes: { bom: "---\nname: bom\n---\n# bom\n\n<!-- include: b -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const r = rename("bom", "Ruim", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(has(recipe(root, "Ruim")), true);
+  } finally { cleanup(root); }
+});
+
+test("rename: a recipe with no frontmatter is not gated by conformance", () => {
+  const root = makeRoot({ recipes: { plain: "# plain\n\nno frontmatter here.\n" } });
+  try {
+    const r = rename("plain", "Also-Not-Conformant", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(has(recipe(root, "Also-Not-Conformant")), true);
+  } finally { cleanup(root); }
+});
+
+// ── F-07: rename that succeeds but whose follow-up build fails must say WHY ──
+test("rename: an unrelated broken recipe's build failure is surfaced (rename still happens)", () => {
+  const root = makeRoot({
+    bricks: { b: "body" },
+    recipes: {
+      oldn: "---\nname: oldn\n---\n# oldn\n\n<!-- include: b -->\n",
+      broken: "---\nname: broken\n---\n# broken\n\n<!-- include: nao-existe -->\n",
+    },
+  });
+  try {
+    const r = rename("oldn", "newn", { root });
+    assert.equal(r.ok, false);
+    assert.equal(has(recipe(root, "newn")), true, "the rename action itself happened");
+    assert.ok(r.errors?.some((e) => e.msg.includes("include of missing brick: nao-existe")));
+    assert.match(r.msg, /skill "oldn" → "newn"/);
+    assert.match(r.msg, /BUT the follow-up build failed/);
+    // F-14: `command` (the action) and `build` (the follow-up) must be separately inspectable.
+    assert.equal(r.command.ok, true, "the rename action itself succeeded");
+    assert.equal(r.build.ok, false);
+  } finally { cleanup(root); }
+});
+
+// ── C6 regression: rename must scope the name rewrite to the FRONTMATTER BLOCK, using the
+// recipe's ACTUAL fm name — never the whole raw file/filename ──────────────────────────────────
+test("rename: fm `name:` diverges from the filename — after rename, fm name is the NEW name (not stale)", () => {
+  const root = makeRoot({
+    recipes: { old: "---\nname: actual\ndescription: d.\n---\n# old\nbody\n" },
+  });
+  try {
+    const r = rename("old", "new", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(has(recipe(root, "new")), true);
+    const txt = read(recipe(root, "new"));
+    assert.match(txt, /^name:\s*new\s*$/m, "fm name must become the NEW name, even though it never matched the old filename");
+    assert.doesNotMatch(txt, /name:\s*actual/, "the stale fm name must not survive");
+  } finally { cleanup(root); }
+});
+test("rename: a recipe with NO frontmatter but a body line `name: <old>` is left byte-for-byte UNCHANGED (only moved)", () => {
+  const bodyText = "# old\n\nExample config:\n```yaml\nname: old\n```\n";
+  const root = makeRoot({ recipes: { old: bodyText } });
+  try {
+    const r = rename("old", "new", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(has(recipe(root, "new")), true);
+    assert.equal(read(recipe(root, "new")), bodyText, "no-frontmatter body must never be touched by the name rewrite — only moved");
+  } finally { cleanup(root); }
+});
+
 test("rename: generates the new command and removes the old one", () => {
   const root = makeRoot({
     bricks: { b: "body" },
@@ -225,6 +554,9 @@ test("init: scaffolds config + sample skill from a bare dir and builds it", () =
     assert.equal(has(join(root, ".claude/forge/bricks/footer.md")), true);
     assert.equal(has(join(root, ".claude/commands/hello.md")), true, "sample is built");
     assert.ok(r.created.includes("forge.config.json"));
+    // F-14: `command` (the scaffold) and `build` (the sample's follow-up build) are separate.
+    assert.equal(r.command.ok, true);
+    assert.equal(r.build.ok, true, "the sample built cleanly");
   } finally { cleanup(root); }
 });
 
@@ -240,6 +572,9 @@ test("init: is idempotent and never clobbers an existing project", () => {
     assert.equal(has(recipe(root, "hello")), false, "must not seed a sample over a real project");
     assert.equal(read(recipe(root, "mine")).includes("include: real"), true);
     assert.deepEqual(r.created, [], "config already present, recipes present → nothing created");
+    // F-14: no sample was seeded, so no build ran — `build` is `null`, not a run() result.
+    assert.equal(r.command.ok, true);
+    assert.equal(r.build, null);
   } finally { cleanup(root); }
 });
 
@@ -262,6 +597,27 @@ test("init: skips the sample when bricks/recipes/out are not three distinct dirs
     assert.equal(r.ok, true, r.msg);
     assert.equal(has(join(root, "recipes/hello.md")), false, "must not seed when roles collide");
     assert.equal(has(join(root, "bricks/footer.md")), false);
+  } finally { cleanup(root); }
+});
+
+// ── C7: distinctRoles must case-fold on a case-insensitive FS ──────────────────────────────────
+// Defensive/consistency coverage at the init() level (mirrors compose.mjs's role-overlap check,
+// which needs the SAME canonFold for the SAME reason). NOTE: this does not by itself prove
+// red→green — `init()` always mkdir's bricks+recipes BEFORE this check runs, and on this
+// environment's default case-insensitive NTFS temp dir, realpathSync.native auto-resolves a
+// case-variant of an ALREADY-EXISTING dir via the OS itself (verified: a case-variant of a dir
+// that already exists on disk canon()-resolves correctly even WITHOUT the fold). The genuine
+// red→green proof — canon() vs canonFold() on a path with NO existing case-variant sibling on
+// disk at all — lives in paths.test.mjs ("canonFold: folds a path neither side of which exists
+// yet"), which is the exact mechanism this line depends on.
+const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
+test("init: skips the sample when bricks/out collide ONLY by case (C7)", { skip: !CASE_INSENSITIVE_FS }, () => {
+  const root = makeRoot({ config: { bricks: "foo", recipes: "bar", out: "FOO" } });
+  try {
+    const r = init(root);
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(has(join(root, "bar/hello.md")), false, "must not seed when bricks/out collide by case only");
+    assert.equal(has(join(root, "foo/footer.md")), false);
   } finally { cleanup(root); }
 });
 
@@ -361,6 +717,16 @@ test("list: reports skills→bricks and per-brick ref-count (blast radius)", () 
   } finally { cleanup(root); }
 });
 
+test("list: a missing recipes directory suggests `forge init`, not a bare error", () => {
+  const root = makeRoot({ config: { recipes: "nope" } }); // no recipes fixture → dir never created
+  try {
+    const r = list(root);
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /no recipes directory: nope/);
+    assert.match(r.msg, /run `npx nbp-forge init` to scaffold a forge project/);
+  } finally { cleanup(root); }
+});
+
 test("import: a hand-written skill becomes a recipe that round-trips on build", () => {
   const root = makeRoot({});
   const src = join(root, "external", "imported-skill.md");
@@ -411,7 +777,7 @@ test("import: refuses to overwrite an existing recipe unless --force", () => {
     assert.match(read(recipe(root, "taken")), /original/, "must not overwrite without --force");
 
     const forced = importFile(src, { root, force: true });
-    assert.equal(forced.ok, true, forced.errors?.join("; "));
+    assert.equal(forced.ok, true, forced.errors?.map(e => e.msg).join("; "));
     assert.match(read(recipe(root, "taken")), /new content/);
   } finally { cleanup(root); }
 });
@@ -422,10 +788,48 @@ test("import: --name overrides basename and frontmatter name", () => {
   write(src, "---\nname: ignored-name\ndescription: d.\n---\nbody\n");
   try {
     const r = importFile(src, { root, name: "chosen-name" });
-    assert.equal(r.ok, true, r.errors?.join("; "));
+    assert.equal(r.ok, true, r.errors?.map(e => e.msg).join("; "));
     assert.equal(r.skill, "chosen-name");
     assert.equal(has(recipe(root, "chosen-name")), true);
     assert.equal(has(recipe(root, "ignored-name")), false);
+    // F-09: the recipe's OWN frontmatter must be rewritten to match — otherwise the published
+    // output would declare a name ("ignored-name") that disagrees with its own file identity.
+    assert.match(read(recipe(root, "chosen-name")), /^name:\s*chosen-name\s*$/m);
+  } finally { cleanup(root); }
+});
+
+// ── F-09: import --name (or fm-vs-final-name divergence) rewrites the frontmatter name: ──
+test("import: without --name, a frontmatter name matching the final name is left untouched", () => {
+  const root = makeRoot({});
+  const src = join(root, "external", "same.md");
+  write(src, "---\nname: same\ndescription: d.\n---\nbody\n");
+  try {
+    const r = importFile(src, { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.skill, "same");
+    assert.match(read(recipe(root, "same")), /^name:\s*same\s*$/m);
+  } finally { cleanup(root); }
+});
+
+test("import --name: a quoted frontmatter name is rewritten without broken quotes", () => {
+  const root = makeRoot({});
+  const src = join(root, "external", "quoted.md");
+  write(src, `---\nname: "original-name"\ndescription: d.\n---\nbody\n`);
+  try {
+    const r = importFile(src, { root, name: "outro-nome" });
+    assert.equal(r.ok, true, r.msg);
+    assert.match(read(recipe(root, "outro-nome")), /^name:\s*outro-nome\s*$/m);
+  } finally { cleanup(root); }
+});
+
+test("import: a source with no frontmatter at all is never rewritten (no-op)", () => {
+  const root = makeRoot({});
+  const src = join(root, "external", "nofmimport.md");
+  write(src, "# no fm\n\nplain body.\n");
+  try {
+    const r = importFile(src, { root, name: "chosen" });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(read(recipe(root, "chosen")), "# no fm\n\nplain body.\n");
   } finally { cleanup(root); }
 });
 
@@ -507,7 +911,7 @@ test("include with internal `..` canonicalizes to the real brick (builds; no gc 
   });
   try {
     const b = run({ root, mode: "build" });
-    assert.equal(b.ok, true, b.errors?.join("; "));
+    assert.equal(b.ok, true, b.errors?.map(e => e.msg).join("; "));
     assert.match(read(outFile(root, "r")), /FOO BODY/);
     assert.deepEqual(gc(root, { apply: false }).orphans, [], "foo is used via the normalized include");
   } finally { cleanup(root); }
