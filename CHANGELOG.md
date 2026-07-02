@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-02
+
 ### Fixed
 - **Breaking (behavior change):** a **symlinked brick** whose target resolves **outside `bricks/`** is
   now a **build error** (`include resolves outside bricks/ (symlink?)`) instead of being silently
@@ -303,7 +305,8 @@ First public release (npm).
 - **Test suite** (`node --test`, zero deps) covering the engine, lifecycle, and ref-counting.
 - Documentation: `README.md`, `SPEC.md`, `SETUP.md`, `SECURITY.md`, and a runnable [`examples/`](examples/) project.
 
-[Unreleased]: https://github.com/nbpadilha/nbp-forge/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/nbpadilha/nbp-forge/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/nbpadilha/nbp-forge/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/nbpadilha/nbp-forge/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/nbpadilha/nbp-forge/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/nbpadilha/nbp-forge/compare/v0.3.0...v0.3.1
