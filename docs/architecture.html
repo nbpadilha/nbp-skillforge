@@ -83,14 +83,20 @@
   <div class="rule">The golden rule: variation between skills is a parameter the recipe passes — never a modified copy of the brick.</div>
 
   <h2><span class="n">04</span>Safe lifecycle</h2>
-  <p class="sub">Skills are generated, so you never hand-edit the output — you manage them through the forge. Removal is safe by reference count.</p>
+  <p class="sub">Skills are generated, so you never hand-edit the output — you manage them through the forge. <code>build</code> only writes a file whose composed content actually changed (skip-if-unchanged); removal is safe by reference count; an optional pre-commit hook runs the drift-gate for you before every commit.</p>
   <div class="card">
     <table>
-      <tr><td>new</td><td>scaffold a new recipe, then build</td></tr>
+      <tr><td>init</td><td>scaffold config + dirs + a sample skill; installs the pre-commit hook best-effort (<code>--no-hooks</code> to skip)</td></tr>
+      <tr><td>build</td><td>generate every skill — writes only what changed (skip-if-unchanged); <code>--dry-run</code> previews the plan (create / change / unchanged) without writing anything</td></tr>
+      <tr><td>check</td><td>read-only drift-gate: exits 1 if any generated file diverged from its recipe or is orphaned — what CI and the pre-commit hook run</td></tr>
+      <tr><td>list</td><td>show each skill → the bricks it includes, and each brick's ref-count + consumers (blast radius before you edit one)</td></tr>
+      <tr><td>new</td><td>scaffold a new recipe (optional <code>--description</code>), then build</td></tr>
+      <tr><td>import</td><td>onboard an existing SKILL.md/command file as a recipe, deterministically — no LLM involved</td></tr>
       <tr><td>rename</td><td>rename a skill (regenerate, drop the stale output)</td></tr>
       <tr><td>remove</td><td>soft-delete the recipe + only the bricks <b>that skill owns</b>; shared bricks stay (you're told which and why)</td></tr>
       <tr><td>restore</td><td>bring a removed skill (and its bricks) back from <code>_archive/</code></td></tr>
       <tr><td>gc</td><td>find / archive orphan bricks (used by nobody)</td></tr>
+      <tr><td>install-hooks</td><td>(re)install the pre-commit hook — drift-gate + secret scan — without re-running <code>init</code></td></tr>
     </table>
   </div>
   <p class="sub" style="margin-top:14px">Removing a skill <b>never</b> deletes a shared brick: a brick used by exactly one skill is owned by it; a brick used by several belongs to none and is never touched. Removed items are soft-deleted to <code>_archive/</code> (versioned, recoverable). Set <code>deletePolicy: "hard"</code> for permanent deletes.</p>
