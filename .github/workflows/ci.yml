@@ -3,10 +3,14 @@ name: ci
 on: [push, pull_request]
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest, windows-latest]
         node-version: ["18.17", "20", "22"]   # 18.17 = the declared minimum (engines), so the floor is truly exercised
+        include:
+          - os: macos-latest
+            node-version: "22"   # macOS: node 22 only, to keep matrix cost bounded
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
