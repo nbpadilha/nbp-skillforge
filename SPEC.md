@@ -19,13 +19,36 @@ without a recipe is left untouched (and, with `enforceGenerated`, flagged as an 
 - A value may contain a **literal `;`** by escaping it as `\;`; a literal backslash is `\\`.
   (Any other `\x` is left untouched, so Windows-style paths usually need no escaping.)
 - In the brick body, `{{k}}` is replaced by the value. Missing parameter → **build error**
-  (nothing is written). Missing brick → **build error**.
+  (nothing is written). Missing brick → **build error**. A parameter passed by the recipe but not
+  referenced by any `{{k}}` in the brick is a non-blocking **warning** (`build`/`check` still
+  succeed, the file is still written) — printed as `warning: [<skill>] include <brick>: unused
+  param(s): <k1>, <k2>`; useful for catching a typo'd key.
 - A parameter value cannot contain the literal sequence `-->` (it closes the HTML comment that
   carries the directive) — same as any HTML comment. Use a placeholder in the brick if you need one.
+- `<brick-path>` is **case-sensitive** and must match the on-disk file exactly, even on a
+  case-insensitive filesystem (Windows/macOS) — a mismatched case is a **build error**
+  (`include path case mismatch`), not a silently-succeeding include.
+- A **brick's body must not itself contain an include directive** — bricks do not include bricks
+  (composition lives in the recipe). A nested include is a **build error**; inline the content into
+  the brick, or include both bricks from the recipe instead. An include directive inside a *brick's
+  own* frontmatter is not affected (that block is dropped entirely — see Frontmatter).
+- An include directive on a line **inside a fenced code block** (```` ``` ```` or `~~~`, up to 3
+  leading spaces of indentation — CommonMark basics) is **left verbatim, not expanded**, and is
+  **not ref-counted** (a brick cited only inside such a fence is an orphan to `gc`) — so a
+  recipe/brick can document the include syntax itself as a fenced example. An unterminated fence
+  (opened, never closed) masks everything after it to the end of the file. Only block fences are
+  recognized; an inline single-backtick code span (`` `<!-- include: … -->` ``) does **not** mask a
+  directive — it still expands.
 
 ## Frontmatter
 - **Recipe:** the frontmatter (`name`, `description`, …) is passed verbatim to the generated
   file (compatible with the agentskills standard). The banner goes right after the closing `---`.
+  An **empty** frontmatter block (`---\n---\n`, no fields) is valid — distinct from no frontmatter
+  at all — and passes conformance vacuously (no `name`/`description` to validate); the banner still
+  goes right after the closing `---`, with no blank line inserted.
+- Only an include directive in the recipe's **body** is expanded and ref-counted; one placed inside
+  the recipe's own frontmatter is passed through verbatim (frontmatter is never scanned) and does
+  **not** count toward a brick's reference count for `gc`/`remove`/`list`.
 - **Brick:** its own frontmatter is **dropped** on expansion — only the body is inlined. The fields
   are **advisory metadata for humans/agents reading the brick; the engine never validates them**
   (only a recipe's `name`/`description` are validated — see Conformance). Recommended fields:
@@ -110,7 +133,23 @@ output is left untouched.) A `.gitattributes` with `eol=lf` for `forge/**` and t
   from the file's frontmatter + body verbatim, stripping a leading GENERATED banner so a re-import
   never double-banners. Name = `--name` › frontmatter `name:` › source basename; it must be a
   single filesystem-safe path segment (no separators, `..`, reserved device names, or control
-  chars). It does **not** auto-build (an external skill may not build yet); run `forge build` next.
+  chars). When the resolved name differs from the source's own frontmatter `name:`, that field is
+  rewritten to match, so the recipe never declares a name that disagrees with its own identity. It
+  does **not** auto-build (an external skill may not build yet); run `forge build` next.
+- `rename <old> <new>` moves the recipe, regenerates the output under the new name, and removes the
+  stale old one. When the recipe has frontmatter with a `name:` field, that field is ALWAYS
+  rewritten to `<new>` — even if it never matched the old filename — scoped to the frontmatter
+  block only, exactly like `import`'s rewrite (the body is never touched). A recipe with no
+  frontmatter, or frontmatter with no `name:` field, is written back byte-for-byte unchanged (only
+  moved) — a plain slash-command has no SKILL.md identity to rewrite. If the recipe has frontmatter
+  with a `name:` field and `conformance` is enabled, the new name is pre-validated against the same
+  gate `build` enforces **before anything is touched** — a non-conformant new name is refused up
+  front (nothing deleted, moved, or rewritten); a recipe with no frontmatter is not gated.
+- `new`/`remove`/`restore`/`rename` each run a full-project build after their own action. If that
+  action itself succeeds but the follow-up build then fails (e.g. an unrelated, already-broken
+  recipe elsewhere in the project), the command's message says so explicitly and the same build
+  error bullets `build`/`check` print are shown — it never exits 1 with an unexplained success-shaped
+  message.
 
 ## Safety & boundaries
 - Skill names (`new`/`rename`/`remove`/`restore`/`import`) and include paths must be a single
@@ -120,13 +159,30 @@ output is left untouched.) A `.gitattributes` with `eol=lf` for `forge/**` and t
   deleting it.
 - The `bricks`/`recipes`/`out`/`archive` roles must be **distinct, non-nested** directories
   (checked, case-insensitive on Windows/macOS, symlink-resolved when they exist).
-- **Out of scope (by design):** nbp-forge runs with your own privileges on your own files. If you
-  deliberately place a **symlink inside `bricks/`** that points outside the tree, `build` will
-  follow it when inlining content (a content read, not a deletion) — same as any file tool. Don't
-  do that; it isn't a privilege boundary nbp-forge tries to enforce.
+- **Symlinked bricks are rejected at build.** A **symlink inside `bricks/`** whose target resolves
+  outside the tree is a **build error** (`include resolves outside bricks/ (symlink?)`), not followed
+  — the on-disk identity check (added with case-mismatch detection) `realpath`-resolves each brick and
+  requires it to stay inside `bricks/`. (Up to 0.5.0 such a symlink was followed and its content
+  inlined.) This keeps `build` deterministic and consistent with the lifecycle's `insideBricks`
+  guard. Note this is a **consistency/robustness** choice, **not** a privilege boundary: nbp-forge
+  runs with your own privileges on your own files and does not try to sandbox what you deliberately
+  place in your own tree.
 
 ## The golden rule
 > Variation between skills is a **parameter** the recipe passes — never a modified copy of the brick.
 
 ## Known limitations
-- None currently tracked. (A literal `;` in a value is supported via `\;` — see Include directive.)
+- **Bricks cannot include other bricks** — a nested include is rejected as a **build error**, not
+  silently expanded or ignored (enforced at build; see Include directive above). Not really an
+  open "limitation" so much as a documented boundary of the composition model — listed here for
+  discoverability alongside the others.
+- A parameter value cannot contain the literal sequence `-->` — see Include directive above.
+- A `{{param}}` **key** is limited to `[\w-]` (letters, digits, underscore, hyphen). A key using any
+  other character (e.g. a dot in `{{my.key}}`) is never recognized as a placeholder: it is left
+  **verbatim** in the output — no build error, no warning. This is a silent no-op, not a validated
+  restriction, so name your params accordingly.
+- `<brick-path>` is case-sensitive and must match the on-disk file exactly — see Include directive above.
+- A literal `;` in a param value is supported via `\;` — see Include directive above.
+- Fence masking (see Include directive above) recognizes only ```` ``` ```` / `~~~` **block**
+  fences. A 4-space-**indented** code block does not mask a directive (it still expands), and an
+  inline single-backtick code span never masked one either — deliberate non-goals, not planned.

@@ -177,6 +177,7 @@ If any box is unchecked, the setup is **not** done — report which gate failed 
 - **`conformance: [skill] name …`** — the recipe's `name` isn't a lowercase-hyphen segment ≤64 chars; fix it.
 - **`drift: <out>/<name>.md is out of sync`** — output was hand-edited or a recipe changed without a
   rebuild. **Do not edit the output.** Edit the recipe/brick, `forge build`, re-check.
+- **`drift: <out>/<name>.md is missing`** — the recipe has never been built; run `forge build`.
 - **Accidental removal** — `forge restore <skill>` brings back a soft-deleted skill and its owned
   bricks from `_archive/`; or recover from git.
 
