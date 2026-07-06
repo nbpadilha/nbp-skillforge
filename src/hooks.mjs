@@ -1,4 +1,4 @@
-// nbp-forge — git hook installer. Writes .git/hooks/pre-commit as a thin SHIM that delegates to
+// nbp-skillforge — git hook installer. Writes .git/hooks/pre-commit as a thin SHIM that delegates to
 // the VERSIONED hook bundled with this package (scripts/hooks/pre-commit). The shim carries no
 // logic, so the real hook (reviewed in git) can't drift from what runs — and because the shim
 // points at the bundled file, it works the same from a clone OR from node_modules (npm consumer).
@@ -10,12 +10,12 @@ import { join, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { canon } from "./paths.mjs";
 
-const SHIM_MARK = "nbp-forge hook shim";
+const SHIM_MARK = "nbp-skillforge hook shim";
 
 export function installHooks({ root = process.cwd(), force = false, onlyRoot = false } = {}) {
   try {
     // The versioned hook shipped with this package; resolve relative to THIS file so it works
-    // whether nbp-forge is a clone (./scripts/...) or an installed dep (node_modules/nbp-forge/...).
+    // whether nbp-skillforge is a clone (./scripts/...) or an installed dep (node_modules/nbp-skillforge/...).
     // Forward slashes so the path is valid inside the /bin/sh shim on every platform (incl. Windows).
     const bundledHook = fileURLToPath(new URL("../scripts/hooks/pre-commit", import.meta.url)).replace(/\\/g, "/");
     if (!existsSync(bundledHook)) return { ok: false, msg: `bundled hook not found: ${bundledHook}` };
@@ -46,9 +46,11 @@ export function installHooks({ root = process.cwd(), force = false, onlyRoot = f
     if (existsSync(dest)) {
       const cur = readFileSync(dest, "utf8");
       // Line-anchored marker (not a loose substring) so a foreign hook merely *mentioning* the
-      // phrase isn't mistaken for ours and overwritten.
-      if (!/^# nbp-forge hook shim/m.test(cur)) {
-        if (!force) return { ok: false, msg: `a non-nbp-forge pre-commit already exists: ${dest} (re-run with --force to back it up → pre-commit.local.bak and replace it)` };
+      // phrase isn't mistaken for ours and overwritten. Tolerant to the pre-rename marker
+      // (`nbp-forge hook shim`) so a shim installed before the nbp-skillforge rename is recognized
+      // as ours and cleanly replaced, not treated as a foreign hook.
+      if (!/^# nbp-(?:skill)?forge hook shim/m.test(cur)) {
+        if (!force) return { ok: false, msg: `a non-nbp-skillforge pre-commit already exists: ${dest} (re-run with --force to back it up → pre-commit.local.bak and replace it)` };
         const bak = dest + ".local.bak";
         if (existsSync(bak)) rmSync(bak); // make the backup rename deterministic across platforms
         renameSync(dest, bak);
@@ -62,7 +64,7 @@ export function installHooks({ root = process.cwd(), force = false, onlyRoot = f
     // Run the hook via `sh` (not a bare exec) so it works regardless of the hook file's execute
     // bit — a tracked 100644 hook would otherwise fail `exec` with "Permission denied" on POSIX.
     const shim = `#!/bin/sh
-# ${SHIM_MARK} — delegates to nbp-forge's versioned hook; do not edit here.
+# ${SHIM_MARK} — delegates to nbp-skillforge's versioned hook; do not edit here.
 exec sh ${quoted} "$@"
 `;
     // Idempotent: our shim already in place byte-for-byte → leave it (no mtime churn), consistent

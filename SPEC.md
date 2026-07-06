@@ -8,7 +8,7 @@ A skill is a **recipe** (`recipes/<name>.md`) that points to **bricks**
 The forge only governs skills that **have a recipe**. Migration is incremental: anything
 without a recipe is left untouched (and, with `enforceGenerated`, flagged as an orphan).
 
-> `forge` below = `npx nbp-forge` (or `nbp-forge` if installed globally; `node bin/cli.mjs` from a clone).
+> `forge` below = `npx nbp-skillforge` (or `nbp-skillforge` if installed globally; `node bin/cli.mjs` from a clone).
 
 ## Include directive
 ```
@@ -110,6 +110,48 @@ to LF** — `build` is what upholds the LF guarantee. `check` is CR-insensitive,
 file is **not** a false drift positive in CI. (Skip-if-unchanged still applies: a byte-identical LF
 output is left untouched.) A `.gitattributes` with `eol=lf` for `forge/**` and the output dir is recommended.
 
+## Config — `forge.config.json`
+Optional; every field falls back to the default below when the file is absent or a key is omitted.
+```json
+{
+  "bricks": ".claude/forge/bricks",
+  "recipes": ".claude/forge/recipes",
+  "out": ".claude/commands",
+  "archive": ".claude/forge/_archive",
+  "deletePolicy": "soft",
+  "enforceGenerated": false,
+  "conformance": true
+}
+```
+- **`bricks` / `recipes` / `out` / `archive`** — the four role dirs. Must be **distinct, non-nested**
+  (see Safety & boundaries).
+- **`deletePolicy`** — `soft` (move to `_archive/`, recoverable) or `hard` (delete permanently).
+  Fails closed: any value other than `hard` is treated as `soft`.
+- **`enforceGenerated`** — when `true`, `check` requires every output file to have a recipe,
+  forbidding hand-made/edited skills (a forge-only guarantee). Default `false` (incremental adoption:
+  non-recipe skills are left untouched).
+- **`conformance`** — when `true` (default), `build`/`check` validate a recipe's frontmatter against
+  the agentskills SKILL.md standard (see Conformance). Set `false` to disable.
+
+## JSON output (`--json`)
+`forge build`/`check`/`list`/`gc` accept `--json`: stdout becomes **only**
+`JSON.stringify(result, null, 2)` — no `✔`/`✗`/`  • ` decorated lines — for scripting/CI. The exit
+code is unchanged (`0` on success, `1`/`2` on failure). Error paths are covered: an invalid
+`forge.config.json` or an unknown flag on one of these four commands prints
+`{ "ok": false, "error": "..." }` on stdout. Lifecycle commands that mutate the tree
+(`new`/`import`/`remove`/`restore`/`rename`) are **out of scope** for `--json` today; the flag is
+accepted but has no effect on their output.
+
+| Command | Result shape (`JSON.parse`-able) |
+|---|---|
+| `build` / `build --dry-run` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged, plan }` — `plan` is `[{ name, status }]` (`status`: `"create"` \| `"change"` \| `"same"`). No `msg` field. |
+| `check` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged }`. No `msg` field. |
+| `list` | `{ ok, skills, bricks, msg }` — `skills` is `[{ skill, bricks: [name, ...] }]`; `bricks` is `[{ brick, refCount, usedBy: [skill, ...] }]`. |
+| `gc` | `{ ok, orphans, applied, msg }` — `orphans` is `[brick, ...]`; `applied` is `true` only with `--apply`. |
+
+`errors` entries are `{ kind, skill, msg }` (`kind` ∈ `"build"` \| `"conformance"` \| `"drift"` \|
+`"orphan"` \| `"config"`); `msg` is the same full text the non-json CLI prints.
+
 ## Lifecycle & ownership
 - `build` writes each generated file **only when its composed content changed** (skip-if-unchanged):
   an identical re-build leaves the tree clean and reports `N written, M unchanged`. `build --dry-run`
@@ -164,7 +206,7 @@ output is left untouched.) A `.gitattributes` with `eol=lf` for `forge/**` and t
   — the on-disk identity check (added with case-mismatch detection) `realpath`-resolves each brick and
   requires it to stay inside `bricks/`. (Up to 0.5.0 such a symlink was followed and its content
   inlined.) This keeps `build` deterministic and consistent with the lifecycle's `insideBricks`
-  guard. Note this is a **consistency/robustness** choice, **not** a privilege boundary: nbp-forge
+  guard. Note this is a **consistency/robustness** choice, **not** a privilege boundary: nbp-skillforge
   runs with your own privileges on your own files and does not try to sandbox what you deliberately
   place in your own tree.
 

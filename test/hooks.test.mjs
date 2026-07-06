@@ -18,7 +18,7 @@ test("install-hooks: writes a shim delegating to the bundled hook", () => {
     assert.equal(r.ok, true, r.msg);
     assert.equal(existsSync(preCommit(root)), true);
     const shim = readFileSync(preCommit(root), "utf8");
-    assert.match(shim, /nbp-forge hook shim/);
+    assert.match(shim, /nbp-skillforge hook shim/);
     assert.match(shim, /scripts\/hooks\/pre-commit/, "shim points at the bundled versioned hook");
     assert.match(shim, /^exec /m);
   } finally { cleanup(root); }
@@ -51,7 +51,25 @@ test("install-hooks: refuses a foreign pre-commit unless --force (which backs it
     assert.equal(forced.ok, true, forced.msg);
     assert.equal(forced.backedUp, true);
     assert.match(readFileSync(preCommit(root) + ".local.bak", "utf8"), /someone elses hook/, "foreign hook preserved in backup");
-    assert.match(readFileSync(preCommit(root), "utf8"), /nbp-forge hook shim/);
+    assert.match(readFileSync(preCommit(root), "utf8"), /nbp-skillforge hook shim/);
+  } finally { cleanup(root); }
+});
+
+// Retrocompat (package rename): a shim installed BEFORE the nbp-forge → nbp-skillforge rename
+// carries the OLD marker line — it must be recognized as OURS and replaced in place (no --force
+// needed, no .local.bak), not treated as a foreign hook. Mirrors the tolerant marker regex.
+test("install-hooks: a PRE-RENAME shim (nbp-forge marker) is recognized as ours and replaced", () => {
+  const root = bareRoot();
+  try {
+    gitInit(root);
+    writeFileSync(preCommit(root), "#!/bin/sh\n# nbp-forge hook shim — delegates to nbp-forge's versioned hook; do not edit here.\nexec sh '/old/path/scripts/hooks/pre-commit' \"$@\"\n");
+    const r = installHooks({ root }); // NO --force: the old shim must not read as foreign
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.backedUp, false, "our own (old-named) shim is replaced in place, not backed up");
+    assert.equal(existsSync(preCommit(root) + ".local.bak"), false, "no backup file created");
+    const shim = readFileSync(preCommit(root), "utf8");
+    assert.match(shim, /nbp-skillforge hook shim/, "rewritten under the new marker");
+    assert.ok(!/# nbp-forge hook shim/m.test(shim), "old marker replaced");
   } finally { cleanup(root); }
 });
 

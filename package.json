@@ -1,9 +1,9 @@
 {
-  "name": "nbp-forge",
+  "name": "nbp-skillforge",
   "version": "0.6.0",
   "description": "Compose portable agent skills (SKILL.md / commands) from reusable bricks, with a drift-gate.",
   "type": "module",
-  "bin": { "nbp-forge": "bin/cli.mjs" },
+  "bin": { "nbp-skillforge": "bin/cli.mjs" },
   "scripts": {
     "build": "node bin/cli.mjs build",
     "check": "node bin/cli.mjs check",
@@ -14,9 +14,9 @@
   "keywords": ["agent-skills", "skill.md", "composition", "drift-gate", "claude-code"],
   "author": "Nikolas Padilha (nbp)",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/nbpadilha/nbp-forge.git" },
-  "bugs": { "url": "https://github.com/nbpadilha/nbp-forge/issues" },
-  "homepage": "https://github.com/nbpadilha/nbp-forge#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/nbpadilha/nbp-skillforge.git" },
+  "bugs": { "url": "https://github.com/nbpadilha/nbp-skillforge/issues" },
+  "homepage": "https://github.com/nbpadilha/nbp-skillforge#readme",
   "engines": { "node": ">=18.17.0" },
   "files": ["bin/", "src/", "scripts/", "examples/", "SPEC.md"]
 }

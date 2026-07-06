@@ -1,5 +1,5 @@
 #!/bin/sh
-# nbp-forge pre-commit (VERSIONED source of truth). The .git/hooks/pre-commit is a thin
+# nbp-skillforge pre-commit (VERSIONED source of truth). The .git/hooks/pre-commit is a thin
 # shim that delegates here — so this logic is reviewed in git and never drifts. Two gates:
 #   1) secret scan over staged additions (blocks .env files + token-shaped strings)
 #   2) drift-gate (forge check), when this repo is a forge project
@@ -39,10 +39,10 @@ fi
 if grep -q '"forge:check":' package.json 2>/dev/null; then
   npm run -s forge:check || fail=1
 elif [ -f forge.config.json ]; then
-  npx --no-install nbp-forge check || fail=1
+  npx --no-install nbp-skillforge check || fail=1
 fi
 
 if [ "$fail" -ne 0 ]; then
-  echo "pre-commit blocked (nbp-forge)."
+  echo "pre-commit blocked (nbp-skillforge)."
   exit 1
 fi

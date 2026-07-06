@@ -1,13 +1,13 @@
 # AGENTS-SETUP.md — autonomous end-to-end setup runbook
 
-A **master prompt** for an AI agent to adopt `nbp-forge` in a project end-to-end, with **no human
+A **master prompt** for an AI agent to adopt `nbp-skillforge` in a project end-to-end, with **no human
 in the loop**. Hand an agent this file (or paste the [Master prompt](#master-prompt) block) and it
 can install, scaffold, author, build, gate, and verify — stopping only if a gate fails.
 
 > This is the *adopt-it-in-your-project* runbook. For *contributing to this repo*, see
 > [`AGENTS.md`](AGENTS.md); for the format, [`SPEC.md`](SPEC.md); for the #1 pitfall, [`SETUP.md`](SETUP.md).
 
-`forge` below = `npx nbp-forge` (or `nbp-forge` if installed globally; `node bin/cli.mjs` from a clone
+`forge` below = `npx nbp-skillforge` (or `nbp-skillforge` if installed globally; `node bin/cli.mjs` from a clone
 of this repo).
 
 ---
@@ -47,15 +47,15 @@ dirty, commit or stash existing work so the setup's diff is reviewable in isolat
 Each step is **Do** then **Verify**. A failed Verify halts the run — diagnose, fix, re-run the step.
 
 ### 1 — Install (pinned)
-**Do:** add nbp-forge as a dev dependency at an exact version (look up the latest stable that is at
+**Do:** add nbp-skillforge as a dev dependency at an exact version (look up the latest stable that is at
 least a few days old; substitute below):
 ```bash
-npm i -D nbp-forge@<X.Y.Z> --save-exact
+npm i -D nbp-skillforge@<X.Y.Z> --save-exact
 ```
-(Or use `npx nbp-forge@<X.Y.Z> <cmd>` with no install.)
+(Or use `npx nbp-skillforge@<X.Y.Z> <cmd>` with no install.)
 **Verify:**
 ```bash
-npx nbp-forge --version    # prints "nbp-forge <X.Y.Z>"
+npx nbp-skillforge --version    # prints "nbp-skillforge <X.Y.Z>"
 ```
 
 ### 2 — Scaffold (idempotent)
@@ -143,7 +143,7 @@ Add CI that runs the gate on every push — copy
 [`examples/.github/workflows/forge-check.yml`](examples/.github/workflows/forge-check.yml) and adjust
 the install/run lines to this project.
 **Verify:** make a deliberate hand-edit to a generated file, `git add` it, and confirm the commit is
-**blocked**; then revert. Confirm CI runs `nbp-forge check`.
+**blocked**; then revert. Confirm CI runs `nbp-skillforge check`.
 
 ### 8 — Redirect agent instructions (close the #1 pitfall)
 **Do:** grep this project's `CLAUDE.md` / `AGENTS.md` / `README` for instructions that tell an agent to
@@ -156,7 +156,7 @@ already says "do not edit here — edit the recipe/brick and run `forge build`".
 ---
 
 ## Done criteria (the run is complete when ALL hold)
-- [ ] `npx nbp-forge --version` prints the pinned version.
+- [ ] `npx nbp-skillforge --version` prints the pinned version.
 - [ ] `forge check` exits 0 (`N in sync`), with `N` = number of recipes.
 - [ ] `forge list` shows every intended skill mapping to its bricks; no unexpected orphan bricks.
 - [ ] The pre-commit hook blocks a hand-edit of a generated file (verified, then reverted).
@@ -186,7 +186,7 @@ If any box is unchecked, the setup is **not** done — report which gate failed 
 ## Master prompt
 Paste this to an agent to run the whole thing autonomously:
 
-> You are setting up `nbp-forge` in this repository end-to-end and autonomously. Follow
+> You are setting up `nbp-skillforge` in this repository end-to-end and autonomously. Follow
 > `AGENTS-SETUP.md` exactly. Obey its Operating rules at every step: never hand-edit a generated file
 > under the configured `out/` dir (edit the recipe/brick and run `forge build`); verify every step by
 > **executing** the stated Verify command, not by assumption; inspect any file before overwriting or

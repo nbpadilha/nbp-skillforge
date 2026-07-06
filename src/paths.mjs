@@ -1,4 +1,4 @@
-// nbp-forge — path canonicalization, unified (F-13).
+// nbp-skillforge — path canonicalization, unified (F-13).
 // Three call sites (compose.mjs's role-dir-overlap check, lifecycle.mjs's distinctRoles check +
 // insideBricks, hooks.mjs's git-toplevel compare) each hand-rolled their own realpath+fallback
 // closure. This module is the single source of truth for the two variants that actually differ:

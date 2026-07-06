@@ -1,6 +1,6 @@
 # EXAMPLE — copy this to `.github/workflows/forge-check.yml` at the ROOT of YOUR repo.
 # (It lives under examples/ here on purpose: GitHub only runs workflows from the repo root,
-#  so this copy never executes in nbp-forge itself.)
+#  so this copy never executes in nbp-skillforge itself.)
 #
 # Runs the drift-gate on every push/PR: fails if any generated skill diverged from its recipe
 # (or violates the SKILL.md standard). Assumes a forge.config.json at your repo root.
@@ -13,4 +13,4 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "20" }
-      - run: npx --yes nbp-forge check
+      - run: npx --yes nbp-skillforge check

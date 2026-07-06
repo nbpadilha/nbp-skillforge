@@ -2,10 +2,10 @@
 
 A small [Claude Code](https://claude.com/claude-code) `PreToolUse` hook that **stops the agent
 from hand-editing a generated skill**. It complements the git pre-commit hook by catching the
-mistake earlier — the instant the agent tries to `Edit`/`Write` a file carrying the nbp-forge
+mistake earlier — the instant the agent tries to `Edit`/`Write` a file carrying the nbp-skillforge
 `GENERATED` banner — and points it at the recipe instead.
 
-This is **vendor-specific** (Claude Code) and entirely optional; nbp-forge's output stays
+This is **vendor-specific** (Claude Code) and entirely optional; nbp-skillforge's output stays
 vendor-neutral. Nothing here is part of the core tool.
 
 ## Install (in your own project)

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// nbp-forge CLI. Run `nbp-forge help` for usage.
+// nbp-skillforge CLI. Run `nbp-skillforge help` for usage.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -22,9 +22,9 @@ const HELP = {
   help:    "help [<command>]                     show this help, or detail for one command",
 };
 function usage(cmd) {
-  if (cmd && HELP[cmd]) { console.log("nbp-forge " + HELP[cmd]); return; }
-  console.log("nbp-forge — compose portable agent skills from reusable bricks, with a drift-gate.\n");
-  console.log("usage: nbp-forge <command> [options]   (docs/tables abbreviate this as `forge`)\n");
+  if (cmd && HELP[cmd]) { console.log("nbp-skillforge " + HELP[cmd]); return; }
+  console.log("nbp-skillforge — compose portable agent skills from reusable bricks, with a drift-gate.\n");
+  console.log("usage: nbp-skillforge <command> [options]   (docs/tables abbreviate this as `forge`)\n");
   for (const k of ["build", "check", "init", "list", "new", "import", "rename", "remove", "restore", "gc", "install-hooks", "help"]) console.log("  " + HELP[k]);
   console.log("\nPaths/options come from forge.config.json at the root (see SPEC.md).");
   console.log("--json (build/check/list/gc only): print ONLY the machine-readable result (JSON.stringify(result, null, 2)) — no decorated lines. Exit code unchanged. See README's \"JSON output\" section for the shape.");
@@ -60,10 +60,10 @@ const cmd = pos[0] || "build";
 if (wantVersion) {
   try {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-    console.log(`nbp-forge ${pkg.version}`);
+    console.log(`nbp-skillforge ${pkg.version}`);
     process.exit(0);
   } catch {
-    console.error("nbp-forge (version unavailable)");
+    console.error("nbp-skillforge (version unavailable)");
     process.exit(1);
   }
 }

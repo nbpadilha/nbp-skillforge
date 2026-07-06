@@ -3,7 +3,7 @@
 Guidance for AI agents (and humans) working in this repo. Public and intentionally short.
 
 ## What this is
-`nbp-forge` composes portable agent skills (`SKILL.md` / slash-command files) from reusable
+`nbp-skillforge` composes portable agent skills (`SKILL.md` / slash-command files) from reusable
 **bricks**, with a **drift-gate**. A **recipe** points to bricks; `forge build` assembles the
 final self-contained file; `forge check` fails if any generated file drifted from its recipe.
 
@@ -28,5 +28,5 @@ enforced, so a brick can safely document the include syntax as a fenced example.
 - [Conventional Commits](https://www.conventionalcommits.org/): `feat` / `fix` / `docs` / `refactor` / `test` / `chore`.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup details and [`SPEC.md`](SPEC.md) for the format.
-To adopt nbp-forge in **your** project autonomously, hand an agent [`AGENTS-SETUP.md`](AGENTS-SETUP.md)
+To adopt nbp-skillforge in **your** project autonomously, hand an agent [`AGENTS-SETUP.md`](AGENTS-SETUP.md)
 — an end-to-end setup runbook with execution gates.

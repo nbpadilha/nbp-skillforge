@@ -2,9 +2,9 @@
 
 ## Install
 ```bash
-npm i -D nbp-forge         # zero dependencies
-npx nbp-forge build        # generate skills from recipes + bricks
-npx nbp-forge check        # drift-gate (CI / pre-commit)
+npm i -D nbp-skillforge         # zero dependencies
+npx nbp-skillforge build        # generate skills from recipes + bricks
+npx nbp-skillforge check        # drift-gate (CI / pre-commit)
 ```
 (From a clone of this repo the CLI is `node bin/cli.mjs <cmd>`.)
 
@@ -44,5 +44,24 @@ agent) are about to edit one and see the banner, **stop and go to the recipe**.
   the SKILL.md standard; set `false` to disable.
 
 ## Pre-commit / CI
-Run `npx nbp-forge check` on staged changes (or in CI). It fails if any generated file was
+Run `npx nbp-skillforge check` on staged changes (or in CI). It fails if any generated file was
 hand-edited, diverges from its recipe, or (with `enforceGenerated`) has no recipe.
+
+## Adopting & rolling back — both are cheap
+Adoption is **incremental**: onboard one skill at a time (`forge import <file>`, then `build`).
+A skill without a recipe is **left untouched** — there is no flag day, and you stop whenever you like.
+
+Rollback is **cheaper still — you do nothing to your skills**. Every file the forge builds is a
+complete, standalone `SKILL.md`/command living in your normal `out` path (`.claude/commands/` by
+default). To stop using the forge:
+
+```bash
+rm -rf .claude/forge        # bricks, recipes, archive
+rm forge.config.json        # the one-line-per-field config at the repo root
+npm rm nbp-skillforge       # drop the CLI
+```
+
+Every generated skill keeps working exactly as before — there is no runtime, no proprietary format
+to unwind, and nothing to migrate back. The only trace left behind is the harmless
+`<!-- GENERATED … -->` comment at the top of each file (an HTML comment; agents ignore it). Your
+skills were never hostages of the forge.

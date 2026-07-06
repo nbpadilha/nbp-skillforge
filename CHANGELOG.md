@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+- **Package renamed: `nbp-forge` → `nbp-skillforge`** (npm name, `bin`, repository URLs, docs).
+  The short `forge` verb and the `.claude/forge/` role dirs are **unchanged** — only the package
+  identity moves. Historical entries below keep the name they shipped under.
+- **Backward compatible with pre-rename artifacts:** the GENERATED-banner detector
+  (`GENERATED_BANNER_RE`), the pre-commit hook-shim marker check, and the example Claude Code
+  guard (`examples/claude-code/forge-guard.mjs`) all recognize both `nbp-forge` (old) and
+  `nbp-skillforge` (new) signatures — files generated and hooks installed before the rename keep
+  working; the next `build`/`install-hooks` rewrites them under the new name.
+- README repositioned value-first (adopt-in-minutes / rollback-in-seconds); detailed
+  config/JSON-output reference moved from README to SPEC.md (new "Config" and "JSON output"
+  sections there); SETUP.md documents incremental adoption + exact rollback steps.
+
 ## [0.6.0] - 2026-07-02
 
 ### Fixed

@@ -1,6 +1,6 @@
 {
   "//": "EXAMPLE — merge into YOUR project's .claude/settings.json. Opt-in, Claude Code only.",
-  "//2": "Stops the agent from hand-editing an nbp-forge GENERATED file (edit the recipe instead).",
+  "//2": "Stops the agent from hand-editing an nbp-skillforge GENERATED file (edit the recipe instead).",
   "hooks": {
     "PreToolUse": [
       {
