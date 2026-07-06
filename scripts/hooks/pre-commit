@@ -35,11 +35,47 @@ fi
 
 # ── 2) drift-gate ────────────────────────────────────────────────────────────
 # Prefer a repo-defined `forge:check` script (lets a repo point check at a sub-root);
-# else, if the repo root is itself a forge project, run the published CLI.
+# else, if the repo root is itself a forge project, run the CLI — with two guarantees:
+#
+# LOCAL-ONLY resolution (Fable B3): `npx --no-install` is IGNORED by npm ≥9 — it hit the npm
+# registry on every commit (network dependency + running remote @latest code at commit time,
+# and E404-blocking every commit while the package is unpublished/offline). We only ever run a
+# binary that is already present; when none is found the gate is skipped with a note.
+#
+# INDEX-exact gating (Fable B4): the check runs against a `git checkout-index` materialization
+# of the STAGED tree, not the worktree — staging a recipe edit without its rebuilt output used
+# to pass a drifted commit (worktree was clean; the commit was not).
 if grep -q '"forge:check":' package.json 2>/dev/null; then
+  # Repo-defined script: the repo owns its semantics (may target a sub-root); runs as defined —
+  # against the WORKTREE (an npm script can't be redirected into the index materialization: it
+  # may need node_modules, which the index doesn't carry). DOCUMENTED residual: with a custom
+  # script, a partially-staged recipe/output pair is not caught here — the index-exact gate below
+  # only applies to the default (forge.config.json at root) path.
   npm run -s forge:check || fail=1
 elif [ -f forge.config.json ]; then
-  npx --no-install nbp-skillforge check || fail=1
+  forge_bin=""
+  if [ -x "node_modules/.bin/nbp-skillforge" ]; then forge_bin="node_modules/.bin/nbp-skillforge"
+  elif command -v nbp-skillforge >/dev/null 2>&1; then forge_bin="nbp-skillforge"
+  fi
+  if [ -n "$forge_bin" ]; then
+    idx_ok=0
+    idx_tmp=$(mktemp -d 2>/dev/null) || idx_tmp=""
+    if [ -n "$idx_tmp" ]; then
+      # checkout-index's exit code is CHECKED: a partial materialization (sparse checkout,
+      # permissions, exotic paths) must never be silently checked as if it were the full index —
+      # on any failure we fall back to the worktree check below.
+      if git checkout-index -a -f --prefix="$idx_tmp/" && [ -f "$idx_tmp/forge.config.json" ]; then
+        "$forge_bin" check --root "$idx_tmp" || fail=1
+        idx_ok=1
+      fi
+      rm -rf "$idx_tmp"
+    fi
+    if [ "$idx_ok" -ne 1 ]; then
+      "$forge_bin" check || fail=1   # index materialization unavailable → worktree check (better than nothing)
+    fi
+  else
+    echo "· drift-gate skipped: nbp-skillforge CLI not found locally (npm i -D nbp-skillforge to enable it)"
+  fi
 fi
 
 if [ "$fail" -ne 0 ]; then

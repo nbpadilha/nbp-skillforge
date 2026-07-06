@@ -12,7 +12,7 @@
 // and reported; names are never rewritten without consent (skip + proposal); enforceGenerated
 // auto-enables ONLY on the 100%-migrated condition.
 
-import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { join, basename, dirname, isAbsolute } from "node:path";
 import { createHash } from "node:crypto"; // node builtin — the zero-runtime-deps guarantee holds
 import {
@@ -38,7 +38,7 @@ export function preScan(buf) {
   try { text = new TextDecoder("utf8", { fatal: true }).decode(buf); }
   catch { return { utf8: false, bom, text: null, includeLike: false, placeholders: [] }; }
   // (decode already dropped the BOM, so splitFm's ^--- anchor is safe from here on)
-  text = text.replace(/\r\n/g, "\n");
+  text = text.replace(/\r\n?/g, "\n");
   const { body } = splitFm(text);
   const isFenced = fenceMasker(body);
   INCLUDE.lastIndex = 0; // defensive — see compose.mjs's includesOf note
@@ -52,7 +52,7 @@ export function preScan(buf) {
 // CRLF→LF, and EOF whitespace trimming. Normalize exactly those three axes — nothing more, so a
 // real content divergence is never masked. Reassembly mirrors compose()/importFile's head shape.
 export function normalizeForGate(text) {
-  const norm = text.replace(/\r\n/g, "\n");
+  const norm = text.replace(/\r\n?/g, "\n");
   const { fm, body } = splitFm(norm);
   const cleanBody = body.replace(GENERATED_BANNER_RE, "");
   const whole = fm === null ? cleanBody : `---\n${fm}${fm ? "\n" : ""}---\n${cleanBody}`;
@@ -80,6 +80,11 @@ export function discover(root, cfg, { from } = {}) {
   const discAbs = join(root, discRel);
   const entries = [];
   if (!existsSync(discAbs)) return { discRel, entries };
+  // Fable B9: `--from some-file.md` used to crash raw (ENOTDIR on readdirSync). Environment
+  // mistake → clean user-facing error.
+  if (!statSync(discAbs).isDirectory()) {
+    throw Object.assign(new Error(`onboard: the scan root is not a directory: ${discRel}`), { userFacing: true });
+  }
 
   // isFile: a directory named `x.md` is not a recipe — counting it would mask a real collision
   // (and the engine itself would EISDIR on it; dispositions must stay accurate regardless).
@@ -87,11 +92,15 @@ export function discover(root, cfg, { from } = {}) {
     ? new Set(readdirSync(join(root, cfg.recipes), { withFileTypes: true }).filter((de) => de.isFile() && de.name.endsWith(".md")).map((de) => fold(basename(de.name, ".md"))))
     : new Set();
 
-  // The scanned root may be a custom --from dir: an eligible name whose <out>/<name>.md ALREADY
-  // exists would then be OVERWRITTEN by the build without ever entering the snapshot (dual-review
-  // finding) — those become skip-collision. With the default scan (from === outs[0]) the source
-  // IS the out file itself, already snapshotted, so this guard is scoped to custom roots.
-  const customFrom = from !== undefined && from !== cfg.outs[0];
+  // Overwrite protection across ALL destinations (Fable B1, CONFIRMED data loss): the single
+  // build after import writes <name>.md into EVERY out dir — any pre-existing file there that
+  // is NOT byte-identical to the scanned source would be destroyed without ever entering the
+  // snapshot. Per eligible name, every out dir OTHER than the scanned root itself (canonical
+  // compare — a `--from .claude\commands` backslash spelling or `--from <out[1]>` must not make
+  // a file "collide with itself", Fable B6) is checked: divergent bytes → skip-collision;
+  // byte-identical → allowed (its content IS the snapshotted source).
+  const scanCanon = canonFold(discAbs);
+  const otherOuts = cfg.outs.filter((o) => canonFold(join(root, o)) !== scanCanon);
 
   const seenNames = new Map(); // fold(name) → first file (in-batch collision detection, P6)
   // Code-unit sort (not localeCompare): the scan order must not depend on the host's locale.
@@ -137,8 +146,17 @@ export function discover(root, cfg, { from } = {}) {
         continue;
       }
     }
-    if (customFrom && cfg.outs.some((o) => existsSync(join(root, o, name + ".md")))) {
-      entries.push({ file: rel, name, status: "skip-collision", reason: "a file with this name already exists in an out dir — the build would overwrite it without a snapshot", proposal: "remove/rename the out file, or onboard it first" });
+    const divergentOut = otherOuts.find((o) => {
+      const target = join(root, o, name + ".md");
+      try {
+        if (!existsSync(target)) return false;
+        // Size check first (review nit): different sizes are divergent without reading the body.
+        if (statSync(target).size !== buf.length) return true;
+        return !buf.equals(readFileSync(target));
+      } catch { return true; } // unreadable target: fail closed
+    });
+    if (divergentOut !== undefined) {
+      entries.push({ file: rel, name, status: "skip-collision", reason: `a DIFFERENT file with this name already exists in ${divergentOut}/ — the build would overwrite it without a snapshot`, proposal: "reconcile the two copies (or remove one), then re-run" });
       continue;
     }
     // P3: an include-like directive outside a fence would be EXPANDED by the engine on build
@@ -389,7 +407,7 @@ export function installSkill({ root = process.cwd(), cfg = loadConfig(root) } = 
   if (existsSync(dest)) {
     const cur = readFileSync(dest, "utf8");
     if (cur === body) return { ok: true, already: true, msg: `forge-onboard skill already installed: ${cfg.outs[0]}/forge-onboard.md` };
-    if (!hasForgeRole(splitFm(cur.replace(/\r\n/g, "\n")).fm))
+    if (!hasForgeRole(splitFm(cur.replace(/\r\n?/g, "\n")).fm))
       return { ok: false, msg: `refusing to overwrite ${cfg.outs[0]}/forge-onboard.md: it exists and does NOT carry the forge-role marker (looks like a user file, not our tooling)` };
   }
   mkdirSync(dirname(dest), { recursive: true });
@@ -503,7 +521,7 @@ export function onboard({ root = process.cwd(), ts, apply = false, from, factor 
   // path-string matching broke on Windows separators and missed a tool the scan never saw
   // (--from / out[1]); the engine's own orphan scan uses the same marker rule.
   const isMarkedTool = (absFile) => {
-    try { return hasForgeRole(splitFm(readFileSync(absFile, "utf8").replace(/\r\n/g, "\n")).fm); } catch { return false; }
+    try { return hasForgeRole(splitFm(readFileSync(absFile, "utf8").replace(/\r\n?/g, "\n")).fm); } catch { return false; }
   };
   const recipeSet = new Set(existsSync(join(root, cfg.recipes)) ? readdirSync(join(root, cfg.recipes)).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md")) : []);
   const outTools = []; // marked tool files sitting in GOVERNED out dirs (the only removal targets)

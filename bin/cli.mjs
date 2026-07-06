@@ -38,7 +38,12 @@ const die = (msg) => { console.error("✗ " + msg); process.exit(2); };
 // even under --json — it happens mid-parse, before `wantJson`/`cmd` are known. Unlike an unknown
 // flag or a bad config (both --json-aware, see jsonErr), this is a malformed-invocation typo, so
 // failing fast to stderr like any CLI is acceptable; not worth a two-pass arg parser to JSON-ify.
-const value = (a, i) => { const v = argv[i]; if (v === undefined || v.startsWith("-")) die(`${a} requires a value`); return v; };
+// Fable B11: a value that merely STARTS with a single "-" (e.g. --description "-wip: not done")
+// is legal — only a MISSING value, a token shaped like a long flag ("--…", which is how a TYPO'd
+// flag would otherwise be silently swallowed as a value), or one of our own short flags is a
+// malformed invocation.
+const SHORT_FLAGS = new Set(["-h", "-v"]);
+const value = (a, i) => { const v = argv[i]; if (v === undefined || v.startsWith("--") || SHORT_FLAGS.has(v)) die(`${a} requires a value`); return v; };
 let root = process.cwd(), hard = false, apply = false, force = false, name, description, from, factor = false, installSkillFlag = false, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false, wantJson = false, unknownFlag = null;
 const pos = [];
 for (let i = 0; i < argv.length; i++) {
@@ -161,7 +166,8 @@ switch (cmd) {
     break;
   }
   case "onboard": {
-    if (installSkillFlag) { finish(installSkill({ root })); }
+    // Fable B12: --install-skill must honor --json like every other onboard path.
+    if (installSkillFlag) { const r = installSkill({ root }); if (wantJson) finishJson(r); finish(r); }
     // The run timestamp is minted HERE (the one non-deterministic input, injected at the edge —
     // src/onboard.mjs itself never reads the clock, so its behavior is fully input-determined).
     const ts = new Date().toISOString().replace(/[:.]/g, "-").replace(/Z$/, "");

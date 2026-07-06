@@ -1112,3 +1112,37 @@ test("F-26 rename: same pre-flight — refused before any mutation on a role-ove
     assert.equal(has(recipe(root, "novo")), false);
   } finally { cleanup(root); }
 });
+
+// ═══ Fable bug-hunt regression fixes (session 2026-07-06, post-0.7.0) ═══════════════════════
+test("Fable B2: gc refuses a role-overlapping config BEFORE touching anything (recipes survive)", () => {
+  const root = makeRoot({ config: { recipes: "bricks/recipes" } }); // recipes nested inside bricks
+  write(join(root, "bricks", "recipes", "my-skill.md"), "---\nname: my-skill\ndescription: d.\n---\nbody\n");
+  try {
+    const r = gc(root, { apply: true, hard: true });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /must not be inside or equal to/);
+    assert.equal(has(join(root, "bricks", "recipes", "my-skill.md")), true, "recipe NOT deleted");
+  } finally { cleanup(root); }
+});
+
+test("Fable B2b: restore has the same pre-flight", () => {
+  const root = makeRoot({ config: { recipes: "bricks/recipes" } });
+  try {
+    const r = restore("qualquer", { root });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /must not be inside or equal to/);
+  } finally { cleanup(root); }
+});
+
+test("Fable B7: gc --apply --hard says 'deleted (permanent)', never 'archived'", () => {
+  const root = makeRoot({ bricks: { orphan: "nobody uses me" } });
+  try {
+    const r = gc(root, { apply: true, hard: true });
+    assert.equal(r.ok, true);
+    assert.match(r.msg, /deleted \(permanent\)/);
+    assert.ok(!/archived/.test(r.msg));
+    const soft = makeRoot({ bricks: { orphan: "nobody uses me" } });
+    assert.match(gc(soft, { apply: true }).msg, /archived/);
+    cleanup(soft);
+  } finally { cleanup(root); }
+});

@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+Post-release adversarial bug hunt (Fable), 12 confirmed-by-execution bugs, most-critical first:
+- **Data loss (multi-out):** `onboard --apply` overwrote a byte-DIVERGENT same-named file sitting
+  in another out dir without snapshotting it (and could then announce "100% migrated"). Such
+  files are now `skip-collision`; a byte-identical copy is still allowed.
+- **Destructive:** `gc` (and `restore`) lacked the role-overlap pre-flight that `remove`/`rename`
+  gained in F-26 — with a nested-roles misconfig, `gc --apply --hard` permanently deleted RECIPES
+  as "orphan bricks". Both now fail closed before touching anything.
+- **Pre-commit hook:** `npx --no-install` is ignored by npm ≥ 9 — the drift-gate hit the npm
+  REGISTRY on every commit (network dependency, remote code at commit time, E404-blocking when
+  offline/unpublished). Resolution is now local-only (node_modules/.bin → PATH → skip with a
+  note). And the gate now checks the **INDEX** (via `git checkout-index`), not the worktree —
+  staging a recipe edit without its rebuilt output used to pass a drifted commit.
+- **Engine:** a lone `\r` (partially converted CR-mac file) produced a permanent build/check
+  disagreement (`build` said clean, `check` failed forever) — every read now normalizes
+  `\r\n?`. A directory squatting `out/<name>.md` or a read-only output file crashed with a raw
+  EISDIR/EPERM stack — both are structured build errors now (onboard then takes its normal
+  "build failed" path, report + backup preserved).
+- **onboard:** `--from` compared to the out dir by string literal — a backslash spelling
+  (Windows) or `--from <out[1]>` made every file "collide with itself" (canonical compare now);
+  `--from <file>` crashed raw (clean error now).
+- **CLI/UX:** `gc --apply --hard` said "archived" for a permanent delete (now "deleted
+  (permanent)"); `import` double-bannered when blank lines sat between the frontmatter and an old
+  GENERATED banner; option values starting with `-` were impossible to pass; `onboard
+  --install-skill --json` printed decorated text instead of JSON.
+
 ## [0.7.0] - 2026-07-06
 
 > The **migration release**: the package is now `nbp-skillforge`, one recipe set can build to

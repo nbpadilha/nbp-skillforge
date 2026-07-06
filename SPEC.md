@@ -108,7 +108,10 @@ Output is always LF. The two gates treat line endings differently **by design**:
 raw bytes, so a generated file that drifted to CRLF (a Windows checkout/editor) is **rewritten back
 to LF** — `build` is what upholds the LF guarantee. `check` is CR-insensitive, so that same CRLF
 file is **not** a false drift positive in CI. (Skip-if-unchanged still applies: a byte-identical LF
-output is left untouched.) A `.gitattributes` with `eol=lf` for `forge/**` and the output dir is recommended.
+output is left untouched.) Every engine read normalizes `\r\n` **and lone `\r`** (a partially
+converted CR-mac source) to LF — a stray CR converges in one build instead of producing a
+permanent build/check disagreement. A `.gitattributes` with `eol=lf` for `forge/**` and the output
+dir is recommended.
 
 ## Config — `forge.config.json`
 Optional; every field falls back to the default below when the file is absent or a key is omitted.
@@ -218,7 +221,9 @@ root. Every file gets an explicit disposition — nothing is silently dropped:
 - `skip-nested` (subfolders are v1 out of scope) · `skip-non-utf8` · `skip-include-like` (a
   directive outside a fence would be expanded by the engine — no safe verbatim path) ·
   `skip-nonconformant` (a rename is PROPOSED, never applied — renaming changes the invocation
-  name) · `skip-collision` (case-fold aware). Skipped originals are never touched.
+  name) · `skip-collision` (case-fold aware; also raised when a **byte-divergent** file with the
+  same name already exists in another out dir — the build would overwrite it without a snapshot;
+  a byte-identical copy is allowed). Skipped originals are never touched.
 
 **`--apply` pipeline:** (1) **snapshot** every eligible original, byte-faithful (CRLF/BOM
 preserved), to `_onboard-backup-<ts>/` beside the archive dir — the first build overwrites the

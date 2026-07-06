@@ -1178,3 +1178,30 @@ test("F-26 retrocompat: a single-string out keeps destinations=1 and the exact p
     assert.equal(r.count, 1);
   } finally { cleanup(root); }
 });
+
+// ═══ Fable bug-hunt regression fixes (session 2026-07-06, post-0.7.0) ═══════════════════════
+test("Fable B5: a lone CR (partially converted CR-mac file) converges — build heals, check green", () => {
+  const root = makeRoot({
+    recipes: { s: "---\nname: s\ndescription: d.\n---\n# s\nline one\r\rmore\nend\n" },
+  });
+  try {
+    assert.equal(run({ root, mode: "build" }).ok, true);
+    const chk1 = run({ root, mode: "check" });
+    assert.equal(chk1.ok, true, chk1.errors?.map((e) => e.msg).join("; "));
+    // idempotent: a second build writes nothing, check still green (the old bug looped forever)
+    const b2 = run({ root, mode: "build" });
+    assert.equal(b2.written, 0, "second build is a no-op");
+    assert.equal(run({ root, mode: "check" }).ok, true);
+    assert.equal(readRaw(outFile(root, "s")).includes(0x0d), false, "no CR bytes in output");
+  } finally { cleanup(root); }
+});
+
+test("Fable B9b: a directory squatting out/<name>.md is a structured build error, not EISDIR", () => {
+  const root = makeRoot({ recipes: { dirsquat: "---\nname: dirsquat\ndescription: d.\n---\nbody\n" } });
+  mkdirSync(join(root, "out", "dirsquat.md"), { recursive: true });
+  try {
+    const r = run({ root, mode: "check" });
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => e.kind === "build" && /cannot read destination/.test(e.msg)), "clean structured error");
+  } finally { cleanup(root); }
+});
