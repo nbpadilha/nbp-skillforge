@@ -91,6 +91,8 @@ npx nbp-skillforge help          # every command; `help <command>` for one
 
 A complete runnable project lives in [`examples/`](examples/). Setting it up with an AI agent? Hand it [`AGENTS-SETUP.md`](AGENTS-SETUP.md) — an idempotent, verify-as-you-go runbook that runs the whole adoption autonomously.
 
+> 🇧🇷 **Fala português?** Guia passo a passo simples (instalar, migrar, manter, remover): [`docs/GUIA-PT.md`](docs/GUIA-PT.md).
+
 > **CLI-only.** It's a command-line tool, not a library — no public API, no shipped types. Drive it with the commands above (or your `package.json` scripts / CI).
 
 ## Safe by default
