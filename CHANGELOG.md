@@ -7,6 +7,17 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **F-31 Fases 2+3 — `forge onboard`:** migrate an existing skill library into the forge in one
+  command. Dry-run by default (classification report, nothing written; the scanned root is the
+  configured out dir, announced — `--from <dir>` overrides); `--apply` snapshots every original
+  byte-faithfully to `_onboard-backup-<ts>/`, imports them verbatim as recipes, runs one build,
+  and judges each migration with a **fidelity gate** (normalized round-trip diff — banner, CRLF
+  and EOF whitespace are the only normalized axes). Every scanned file gets an explicit
+  disposition (`eligible` / `excluded-*` / `skip-*` — nested, non-UTF-8, include-like,
+  non-conformant name with a proposed rename never auto-applied, case-fold collisions);
+  `onboard-report.md` inside the backup dir records everything, with rollback instructions.
+  When a run ends 100% migrated, `enforceGenerated: true` is enabled automatically (announced);
+  any skip downgrades that to a suggestion. `--json` supported.
 - **F-26 multi-out:** `forge.config.json`'s `out` now accepts **`string | string[]`** — one recipe
   set, N destinations. `build` composes each recipe once and writes it to every out dir
   (skip-if-unchanged per destination); `check` fails on drift in any destination, naming the

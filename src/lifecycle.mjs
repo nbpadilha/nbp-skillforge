@@ -126,7 +126,10 @@ export function importFile(srcPath, { root = process.cwd(), name, force = false 
   if (!existsSync(srcPath)) return { ok: false, msg: `source file not found: ${srcPath}` };
   if (!statSync(srcPath).isFile()) return { ok: false, msg: `source is not a file: ${srcPath}` };
 
-  const raw = readFileSync(srcPath, "utf8").replace(/\r\n/g, "\n");
+  // Strip a leading BOM alongside the CRLF normalization — a BOM'd source would silently defeat
+  // splitFm's ^--- anchor and import the whole frontmatter as body text (found in the F-31 dual
+  // review, verified by execution). The engine's own output is always BOM-less LF.
+  const raw = readFileSync(srcPath, "utf8").replace(/^﻿/, "").replace(/\r\n/g, "\n");
   const { fm, body } = splitFm(raw);
   const cleanBody = body.replace(GENERATED_BANNER_RE, "");
 
