@@ -7,6 +7,12 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **F-31 Fase 4 — `forge onboard --factor` (mechanical factoring):** byte-identical heading
+  sections (fence-aware, ≥3 lines, no `{{param}}`) shared by ≥2 skills are extracted as
+  deterministic `bricks/onboarded/<slug>-<sha8>.md` bricks and swapped for includes in each
+  recipe. Every touched skill is re-verified by the fidelity gate; a failure reverts that skill
+  to verbatim (and drops a consumer-less brick) — factoring can never fail the onboard or change
+  a skill's rebuilt bytes. Near-identical blocks are deliberately left for the assisted step.
 - **F-31 Fases 2+3 — `forge onboard`:** migrate an existing skill library into the forge in one
   command. Dry-run by default (classification report, nothing written; the scanned root is the
   configured out dir, announced — `--from <dir>` overrides); `--apply` snapshots every original

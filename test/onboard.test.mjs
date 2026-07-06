@@ -6,6 +6,8 @@ import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from 
 import { join } from "node:path";
 import { discover, preScan, normalizeForGate, snapshot, onboard } from "../src/onboard.mjs";
 import { run, loadConfig, FORGE_ROLE_VALUE } from "../src/compose.mjs";
+import { gc } from "../src/lifecycle.mjs";
+import { createHash } from "node:crypto";
 import { makeRoot, write, read, readRaw, has, recipe, outFile, cleanup } from "./helpers.mjs";
 
 const TS = "2026-07-06T00-00-00-000"; // injected timestamp — onboard.mjs never reads the clock
@@ -315,5 +317,165 @@ test("review-fix: an import failure mid-batch rolls back every recipe the run cr
     assert.match(r.msg, /rolled back/);
     assert.equal(has(recipe(root, "aaa")), false, "aaa's recipe rolled back (atomic batch)");
     assert.match(read(join(root, "out", "aaa.md")), /# aaa/, "original untouched");
+  } finally { cleanup(root); }
+});
+
+// ═══ F-31 Fase 4: mechanical factoring (--factor) — byte-identical only, self-reverting ═════
+const SHARED = "### Working folder\n\nAt the start, create the run folder.\nWrite progress there as you go.\nNever skip this step.";
+
+test("factor: an identical ### section in 2 skills → 1 brick, 2 includes, gate zero, check green", () => {
+  const root = makeRoot({});
+  write(join(root, "out", "alpha.md"), `---\nname: alpha\ndescription: d.\n---\n# alpha\n\n${SHARED}\n\n## Ending\n\nAlpha-only ending.\n`);
+  write(join(root, "out", "beta.md"), `---\nname: beta\ndescription: d.\n---\n# beta\n\n${SHARED}\n\n## Ending\n\nBeta-only ending.\n`);
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.factoring.factored.length, 1, "exactly one shared brick");
+    const brick = r.factoring.factored[0];
+    assert.match(brick.brick, /^onboarded\/working-folder-[0-9a-f]{8}$/, "deterministic slug-hash name");
+    assert.deepEqual(brick.usedBy.sort(), ["alpha", "beta"]);
+    assert.equal(r.factoring.kept.length, 0);
+    // recipes now carry the include; outputs still reproduce the ORIGINAL bytes (gate proven):
+    assert.match(read(recipe(root, "alpha")), /<!-- include: onboarded\/working-folder-/);
+    assert.match(read(outFile(root, "alpha")), /Never skip this step\./);
+    assert.equal(run({ root, mode: "check" }).ok, true);
+    // determinism: same content → same brick name on a fresh identical root
+    const root2 = makeRoot({});
+    write(join(root2, "out", "alpha.md"), `---\nname: alpha\ndescription: d.\n---\n# alpha\n\n${SHARED}\n\n## Ending\n\nAlpha-only ending.\n`);
+    write(join(root2, "out", "beta.md"), `---\nname: beta\ndescription: d.\n---\n# beta\n\n${SHARED}\n\n## Ending\n\nBeta-only ending.\n`);
+    const r2 = onboard({ root: root2, ts: TS, apply: true, factor: true });
+    assert.equal(r2.factoring.factored[0].brick, brick.brick, "same input → same brick name");
+    cleanup(root2);
+  } finally { cleanup(root); }
+});
+
+test("factor: a block containing a literal {{param}} NEVER becomes a brick", () => {
+  const root = makeRoot({});
+  const P = "### Params\n\nUse {{skill}} here.\nAnd more lines.\nAnd more.";
+  write(join(root, "out", "one.md"), `---\nname: one\ndescription: d.\n---\n# one\n\n${P}\n`);
+  write(join(root, "out", "two.md"), `---\nname: two\ndescription: d.\n---\n# two\n\n${P}\n`);
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.factoring.factored.length, 0, "placeholder block stays in the residual body");
+    assert.match(read(recipe(root, "one")), /\{\{skill\}\}/, "verbatim in the recipe");
+    assert.equal(run({ root, mode: "check" }).ok, true, "and the build stays green");
+  } finally { cleanup(root); }
+});
+
+test("factor: near-identical blocks (1 char apart) do NOT factor (byte-identical only)", () => {
+  const root = makeRoot({});
+  write(join(root, "out", "one.md"), `---\nname: one\ndescription: d.\n---\n# one\n\n### Step\n\nDo the thing.\nCarefully now.\nAlways.\n`);
+  write(join(root, "out", "two.md"), `---\nname: two\ndescription: d.\n---\n# two\n\n### Step\n\nDo the thing.\nCarefully now!\nAlways.\n`);
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true });
+    assert.equal(r.factoring.factored.length, 0, "near-identical is Fase B's job, never automatic");
+  } finally { cleanup(root); }
+});
+
+test("factor: a block shared only inside a code fence does not factor (heading masked)", () => {
+  const root = makeRoot({});
+  const F = "```\n### Fenced heading\nline\nline\nline\n```";
+  write(join(root, "out", "one.md"), `---\nname: one\ndescription: d.\n---\n# one\n\nIntro one.\n\n${F}\n`);
+  write(join(root, "out", "two.md"), `---\nname: two\ndescription: d.\n---\n# two\n\nIntro two.\n\n${F}\n`);
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true });
+    // the fenced pseudo-heading never segments a block of its own; the preamble blocks differ
+    // (Intro one vs two), so nothing is byte-identical across skills.
+    assert.equal(r.factoring.factored.length, 0);
+    assert.equal(run({ root, mode: "check" }).ok, true);
+  } finally { cleanup(root); }
+});
+
+test("factor: blocks shared by 3 skills ref-count 3; gc never flags the onboarded brick", () => {
+  const root = makeRoot({});
+  for (const n of ["um", "dois", "tres"])
+    write(join(root, "out", `${n}.md`), `---\nname: ${n}\ndescription: d.\n---\n# ${n}\n\n${SHARED}\n`);
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.factoring.factored[0].usedBy.length, 3);
+    const g = gc(root, {});
+    assert.equal(g.orphans.length, 0, "a consumed onboarded brick is never an orphan");
+  } finally { cleanup(root); }
+});
+
+// ═══ Fase 4 dual-review regression fixes ════════════════════════════════════════════════════
+test("factor review-fix: the same bytes embedded in ANOTHER section never get factored in-place", () => {
+  const root = makeRoot({});
+  const CORE = "### Shared\n\nline one of shared.\nline two of shared.\nline three.";
+  // skill 'host' contains CORE embedded INSIDE a bigger section (extra line before next heading)
+  write(join(root, "out", "host.md"), `---\nname: host\ndescription: d.\n---\n# host\n\n${CORE}\nhost-extra line in the SAME section.\n\n## Tail\n\ntail.\n`);
+  write(join(root, "out", "aaa.md"), `---\nname: aaa\ndescription: d.\n---\n# aaa\n\n${CORE}\n\n## Tail\n\naaa tail.\n`);
+  write(join(root, "out", "bbb.md"), `---\nname: bbb\ndescription: d.\n---\n# bbb\n\n${CORE}\n\n## Tail\n\nbbb tail.\n`);
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true });
+    assert.equal(r.ok, true, r.msg);
+    // aaa+bbb share the exact section → factored; host's SECTION is different (extra line) and
+    // must stay VERBATIM — the shared bytes inside it are never swapped mid-section.
+    assert.equal(r.factoring.factored.length, 1);
+    assert.deepEqual(r.factoring.factored[0].usedBy, ["aaa", "bbb"]);
+    assert.ok(!read(recipe(root, "host")).includes("<!-- include:"), "host recipe untouched by factoring");
+    assert.match(read(recipe(root, "host")), /line three\.\nhost-extra/, "embedded bytes intact");
+    assert.equal(run({ root, mode: "check" }).ok, true);
+  } finally { cleanup(root); }
+});
+
+test("factor review-fix: a pre-existing brick at the computed path is never clobbered", () => {
+  const root = makeRoot({});
+  const SH = "### Working folder\n\nCreate the run dir.\nTrack progress there.\nNever skip.";
+  write(join(root, "out", "one.md"), `---\nname: one\ndescription: d.\n---\n# one\n\n${SH}\n`);
+  write(join(root, "out", "two.md"), `---\nname: two\ndescription: d.\n---\n# two\n\n${SH}\n`);
+  // squat the deterministic path with DIFFERENT user content
+  const sha8 = createHash("sha256").update(SH).digest("hex").slice(0, 8);
+  write(join(root, "bricks", "onboarded", `working-folder-${sha8}.md`), "USER BRICK — do not clobber\n");
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.factoring.factored.length, 0, "group skipped (path taken by different content)");
+    assert.equal(read(join(root, "bricks", "onboarded", `working-folder-${sha8}.md`)), "USER BRICK — do not clobber\n");
+    assert.equal(run({ root, mode: "check" }).ok, true, "skills stay verbatim and green");
+  } finally { cleanup(root); }
+});
+
+test("factor review-fix: a DIRECTORY squatting the brick path degrades to verbatim (never throws)", () => {
+  const root = makeRoot({});
+  const SH = "### Working folder\n\nCreate the run dir.\nTrack progress there.\nNever skip.";
+  write(join(root, "out", "one.md"), `---\nname: one\ndescription: d.\n---\n# one\n\n${SH}\n`);
+  write(join(root, "out", "two.md"), `---\nname: two\ndescription: d.\n---\n# two\n\n${SH}\n`);
+  const sha8 = createHash("sha256").update(SH).digest("hex").slice(0, 8);
+  mkdirSync(join(root, "bricks", "onboarded", `working-folder-${sha8}.md`), { recursive: true });
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true });
+    assert.equal(r.ok, true, "never throws — factoring degrades");
+    assert.equal(r.factoring.factored.length, 0);
+  } finally { cleanup(root); }
+});
+
+test("factor review-fix: --factor on a dry-run says it only takes effect with --apply", () => {
+  const root = makeRoot({});
+  write(join(root, "out", "x.md"), "---\nname: x\ndescription: d.\n---\n# x\nbody\n");
+  try {
+    const r = onboard({ root, ts: TS, factor: true }); // no apply
+    assert.match(r.msg, /--factor takes effect together with --apply/);
+  } finally { cleanup(root); }
+});
+
+test("factor review-fix: idempotent re-run reuses the identical brick (no dup, still consumed)", () => {
+  const root = makeRoot({});
+  const SH = "### Working folder\n\nCreate the run dir.\nTrack progress there.\nNever skip.";
+  write(join(root, "out", "one.md"), `---\nname: one\ndescription: d.\n---\n# one\n\n${SH}\n`);
+  write(join(root, "out", "two.md"), `---\nname: two\ndescription: d.\n---\n# two\n\n${SH}\n`);
+  try {
+    const r1 = onboard({ root, ts: TS, apply: true, factor: true });
+    assert.equal(r1.factoring.factored.length, 1);
+    // new skill arrives later with the same shared section; re-run factors it against the SAME brick
+    write(join(root, "out", "three.md"), `---\nname: three\ndescription: d.\n---\n# three\n\n${SH}\n`);
+    const r2 = onboard({ root, ts: TS + "-b", apply: true, factor: true });
+    assert.equal(r2.ok, true, r2.msg);
+    const f = r2.factoring.factored[0];
+    assert.equal(f.reused, true, "pre-existing identical brick reused, not rewritten");
+    assert.ok(f.usedBy.includes("three"));
+    assert.equal(run({ root, mode: "check" }).ok, true);
   } finally { cleanup(root); }
 });
