@@ -424,7 +424,13 @@ export function run({ root = process.cwd(), mode = "build", dryRun = false } = {
       if (!existsSync(outsAbs[i])) continue;
       for (const f of readdirSync(outsAbs[i]).filter((f) => f.endsWith(".md"))) {
         const n = basename(f, ".md");
-        if (!recipeNames.has(n)) { orphans++; errors.push({ kind: "orphan", skill: n, msg: `orphan: ${cfg.outs[i]}/${n}.md has no recipe (enforceGenerated)` }); }
+        if (recipeNames.has(n)) continue;
+        // F-31: a file carrying the forge-role marker is nbp-skillforge's OWN tooling (e.g. the
+        // ephemeral forge-onboard agent skill) — package tooling is never an orphan, so strict
+        // mode and an installed tool can coexist. Read only the rare orphan CANDIDATES (never
+        // every governed file), so the cost is negligible.
+        try { if (hasForgeRole(splitFm(readFileSync(join(outsAbs[i], f), "utf8").replace(/\r\n/g, "\n")).fm)) continue; } catch {}
+        orphans++; errors.push({ kind: "orphan", skill: n, msg: `orphan: ${cfg.outs[i]}/${n}.md has no recipe (enforceGenerated)` });
       }
     }
   }

@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { discover, preScan, normalizeForGate, snapshot, onboard } from "../src/onboard.mjs";
+import { discover, preScan, normalizeForGate, snapshot, onboard, installSkill } from "../src/onboard.mjs";
 import { run, loadConfig, FORGE_ROLE_VALUE } from "../src/compose.mjs";
 import { gc } from "../src/lifecycle.mjs";
 import { createHash } from "node:crypto";
@@ -477,5 +477,141 @@ test("factor review-fix: idempotent re-run reuses the identical brick (no dup, s
     assert.equal(f.reused, true, "pre-existing identical brick reused, not rewritten");
     assert.ok(f.usedBy.includes("three"));
     assert.equal(run({ root, mode: "check" }).ok, true);
+  } finally { cleanup(root); }
+});
+
+// ═══ F-31 Fase 5: the forge-onboard agent skill (installSkill + ecosystem closure) ══════════
+test("installSkill: materializes with the marker; idempotent; never clobbers an unmarked homonym", () => {
+  const root = makeRoot({});
+  try {
+    const r1 = installSkill({ root });
+    assert.equal(r1.ok, true, r1.msg);
+    const dest = join(root, "out", "forge-onboard.md");
+    assert.equal(has(dest), true);
+    assert.match(read(dest), /forge-role: nbp-skillforge\/onboard/, "carries the marker");
+    const r2 = installSkill({ root });
+    assert.equal(r2.already, true, "byte-identical reinstall is a no-op");
+    // a same-named USER file (no marker) is never clobbered
+    writeFileSync(dest, "---\nname: forge-onboard\ndescription: user's own!\n---\nmine\n");
+    const r3 = installSkill({ root });
+    assert.equal(r3.ok, false);
+    assert.match(r3.msg, /does NOT carry the forge-role marker/);
+    assert.match(read(dest), /mine/, "user file intact");
+  } finally { cleanup(root); }
+});
+
+test("installSkill → onboard scan: the installed skill is excluded-forge-role (never re-ingested)", () => {
+  const root = makeRoot({});
+  try {
+    installSkill({ root });
+    const r = onboard({ root, ts: TS });
+    assert.equal(r.entries.find((e) => /forge-onboard/.test(e.file)).status, "excluded-forge-role");
+  } finally { cleanup(root); }
+});
+
+test("auto-enforce (maintainer decision): the ephemeral tool is REMOVED in the same step strict mode turns on", () => {
+  const root = makeRoot({});
+  write(join(root, "out", "only.md"), "---\nname: only\ndescription: d.\n---\n# only\nbody\n");
+  try {
+    installSkill({ root });
+    const r = onboard({ root, ts: TS, apply: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.enforced, true, "tool file does not block the 100% condition");
+    assert.equal(has(join(root, "out", "forge-onboard.md")), false, "ephemeral tool removed with the enable");
+    assert.equal(loadConfig(root).enforceGenerated, true);
+    assert.equal(run({ root, mode: "check" }).ok, true, "strict mode green immediately");
+    // and it comes back on demand
+    assert.equal(installSkill({ root }).ok, true);
+  } finally { cleanup(root); }
+});
+
+test("auto-enforce: with skips present the tool is NOT removed (no enable, no removal)", () => {
+  const root = makeRoot({});
+  write(join(root, "out", "only.md"), "---\nname: only\ndescription: d.\n---\n# only\nbody\n");
+  write(join(root, "out", "Bad_Name.md"), "---\nname: Bad_Name\ndescription: d.\n---\nbad\n");
+  try {
+    installSkill({ root });
+    const r = onboard({ root, ts: TS, apply: true });
+    assert.equal(r.enforced, false);
+    assert.equal(has(join(root, "out", "forge-onboard.md")), true, "tool stays when enable is blocked");
+  } finally { cleanup(root); }
+});
+
+test("assets: the bundled spec + wrapper resolve from the package and agree on the marker", () => {
+  const spec = readFileSync(new URL("../assets/onboard/ONBOARD-SPEC.md", import.meta.url), "utf8");
+  const wrapper = readFileSync(new URL("../assets/onboard/claude-code/forge-onboard.md", import.meta.url), "utf8");
+  assert.match(spec, /you propose|You propose/i);
+  assert.match(spec, /forge-role: nbp-skillforge\/onboard/);
+  assert.match(wrapper, /^---\nname: forge-onboard/m);
+  assert.match(wrapper, /ONBOARD-SPEC/, "wrapper points at the embedded protocol (no file path — self-contained install)");
+  assert.match(readFileSync(new URL("../package.json", import.meta.url), "utf8"), /"assets\/"/); // URL direto: imune a %20 (dual-review)
+});
+
+// ═══ Fase 5 dual-review regression fixes ════════════════════════════════════════════════════
+test("engine review-fix: an installed tool under PRE-EXISTING strict mode is never an orphan", () => {
+  const root = makeRoot({ config: { enforceGenerated: true } });
+  write(join(root, "recipes", "only.md"), "---\nname: only\ndescription: d.\n---\n# only\nbody\n");
+  run({ root, mode: "build" });
+  try {
+    const r = installSkill({ root });
+    assert.equal(r.ok, true, r.msg);
+    const chk = run({ root, mode: "check" });
+    assert.equal(chk.ok, true, "check green with the marked tool present under enforceGenerated");
+    assert.equal(chk.orphans, 0);
+  } finally { cleanup(root); }
+});
+
+test("review-fix: auto-enforce with --from still sees (and removes) a tool installed in the OUT dir", () => {
+  const root = makeRoot({});
+  installSkill({ root }); // tool sits in out/, but the scan will look at elsewhere/
+  write(join(root, "elsewhere", "ext.md"), "---\nname: ext\ndescription: d.\n---\n# ext\nbody\n");
+  try {
+    const r = onboard({ root, ts: TS, apply: true, from: "elsewhere" });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.enforced, true, "the marked tool in out/ no longer blocks the enable");
+    assert.equal(has(join(root, "out", "forge-onboard.md")), false, "tool removed from the governed out dir");
+    assert.equal(run({ root, mode: "check" }).ok, true);
+  } finally { cleanup(root); }
+});
+
+test("review-fix: a MARKED file in the --from source dir is never deleted (not an installation)", () => {
+  const root = makeRoot({});
+  write(join(root, "elsewhere", "ext.md"), "---\nname: ext\ndescription: d.\n---\n# ext\nbody\n");
+  write(join(root, "elsewhere", "tool-copy.md"), "---\nname: tool-copy\ndescription: t.\nforge-role: nbp-skillforge/onboard\n---\nuser's template copy\n");
+  try {
+    const r = onboard({ root, ts: TS, apply: true, from: "elsewhere" });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.enforced, true);
+    assert.equal(has(join(root, "elsewhere", "tool-copy.md")), true, "source-dir marked file untouched");
+  } finally { cleanup(root); }
+});
+
+test("review-fix: --from escaping the project root via .. is refused", () => {
+  const root = makeRoot({});
+  try {
+    const r = onboard({ root, ts: TS, from: join("..", "outside") });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /must stay inside the project root/);
+  } finally { cleanup(root); }
+});
+
+test("review-fix: installSkill refuses a role-overlapping config before writing anything", () => {
+  const root = makeRoot({ config: { out: "bricks" } });
+  try {
+    const r = installSkill({ root });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /must not be inside or equal to/);
+    assert.equal(has(join(root, "bricks", "forge-onboard.md")), false, "nothing written");
+  } finally { cleanup(root); }
+});
+
+test("review-fix: the installed skill is SELF-CONTAINED (protocol embedded, no package paths)", () => {
+  const root = makeRoot({});
+  try {
+    installSkill({ root });
+    const installed = read(join(root, "out", "forge-onboard.md"));
+    assert.match(installed, /ONBOARD-SPEC\.md — embedded verbatim/, "spec inlined at install time");
+    assert.match(installed, /Approval unit = the GROUP/, "the actual protocol body is present");
+    assert.ok(!installed.includes("node_modules/nbp-skillforge"), "no package-path resolution instructions");
   } finally { cleanup(root); }
 });

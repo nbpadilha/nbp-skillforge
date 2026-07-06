@@ -364,6 +364,39 @@ function writeReport(backupDir, { discRel, entries, gate, applied, enforce, fact
   writeFileSync(join(backupDir, "onboard-report.md"), md);
 }
 
+// ── installSkill: materialize the ephemeral forge-onboard agent skill from the package ───────
+// The skill is PACKAGE TOOLING (durable home = the installed package; the copy in the out dir is
+// ephemeral and carries the forge-role marker that excludes it from every onboarding scan).
+// Deliberately NOT self-archiving via _archive/ — that dir is the `restore` contract, and
+// restoring would turn the tool into a user recipe (design §4). Idempotent; never clobbers a
+// same-named file that does NOT carry our marker (destruction guard).
+export function installSkill({ root = process.cwd(), cfg = loadConfig(root) } = {}) {
+  // Same pre-flight as every mutating command: never materialize into a role-overlapping config.
+  const overlap = roleOverlapError(root, cfg);
+  if (overlap) return { ok: false, msg: overlap };
+  const wrapperUrl = new URL("../assets/onboard/claude-code/forge-onboard.md", import.meta.url);
+  const specUrl = new URL("../assets/onboard/ONBOARD-SPEC.md", import.meta.url);
+  let body;
+  try {
+    // The installed copy is SELF-CONTAINED: the harness-neutral protocol is embedded verbatim
+    // below the wrapper (dual-review: a path-based "read it from the package" instruction breaks
+    // under npx / global installs / pnpm stores / a copied-out skill file).
+    body = readFileSync(wrapperUrl, "utf8") +
+      "\n---\n\n<!-- ONBOARD-SPEC.md — embedded verbatim from the nbp-skillforge package at install time -->\n\n" +
+      readFileSync(specUrl, "utf8");
+  } catch { return { ok: false, msg: "bundled onboarding assets not found (broken install?)" }; }
+  const dest = join(root, cfg.outs[0], "forge-onboard.md");
+  if (existsSync(dest)) {
+    const cur = readFileSync(dest, "utf8");
+    if (cur === body) return { ok: true, already: true, msg: `forge-onboard skill already installed: ${cfg.outs[0]}/forge-onboard.md` };
+    if (!hasForgeRole(splitFm(cur.replace(/\r\n/g, "\n")).fm))
+      return { ok: false, msg: `refusing to overwrite ${cfg.outs[0]}/forge-onboard.md: it exists and does NOT carry the forge-role marker (looks like a user file, not our tooling)` };
+  }
+  mkdirSync(dirname(dest), { recursive: true });
+  writeFileSync(dest, body);
+  return { ok: true, already: false, msg: `forge-onboard skill installed → ${cfg.outs[0]}/forge-onboard.md. Run it in your agent AFTER \`forge onboard --apply --factor\` (it reads ONBOARD-SPEC.md from the package). It carries the forge-role marker, so onboarding scans always ignore it.` };
+}
+
 // ── onboard: the orchestrator. `ts` is ALWAYS injected by the caller (P2 — determinism). ─────
 export function onboard({ root = process.cwd(), ts, apply = false, from, factor = false } = {}) {
   const cfg = loadConfig(root);
@@ -378,6 +411,11 @@ export function onboard({ root = process.cwd(), ts, apply = false, from, factor 
     // a second absolute segment) — refuse with a clear message instead of scanning a wrong dir.
     if (isAbsolute(from)) return { ok: false, msg: `onboard: --from must be a path relative to the project root (got an absolute path: ${from})` };
     const fromAbs = canonFold(join(root, from));
+    // `..` escaping the project would let discover() record paths whose later join(root, file)
+    // reaches OUTSIDE the project (dual-review: a marked file out there could even be deleted).
+    // Everything onboard touches stays inside the root, always.
+    if (!isInside(fromAbs, canonFold(root)))
+      return { ok: false, msg: `onboard: --from must stay inside the project root (got: ${from})` };
     for (const [role, dir] of [["bricks", cfg.bricks], ["recipes", cfg.recipes], ["archive", cfg.archive]])
       if (isInside(fromAbs, canonFold(join(root, dir))))
         return { ok: false, msg: `onboard: --from must not point inside the ${role} dir (${from}) — those are forge sources, not skills to migrate` };
@@ -457,30 +495,48 @@ export function onboard({ root = process.cwd(), ts, apply = false, from, factor 
   }
 
   // P9 (maintainer decision §8b.5): 100% migrated → enforceGenerated flips ON automatically,
-  // announced loudly. ANY skip, gate failure, or forge-role file still in the out dir (it would
-  // become an instant orphan) blocks the auto-enable — then we only suggest.
+  // announced loudly. ANY skip or gate failure blocks the auto-enable — then we only suggest.
   // Dual-review finding: the scanned root is ONE dir, but enforceGenerated's orphan scan covers
   // EVERY out dir — auto-enabling with an un-governed .md sitting in out[1] (or in outs[0] when
   // --from scanned elsewhere) would make the very next `forge check` fail. Sweep them all first.
+  // Stray detection is MARKER-based (each candidate's own fm), never a path-list comparison —
+  // path-string matching broke on Windows separators and missed a tool the scan never saw
+  // (--from / out[1]); the engine's own orphan scan uses the same marker rule.
+  const isMarkedTool = (absFile) => {
+    try { return hasForgeRole(splitFm(readFileSync(absFile, "utf8").replace(/\r\n/g, "\n")).fm); } catch { return false; }
+  };
   const recipeSet = new Set(existsSync(join(root, cfg.recipes)) ? readdirSync(join(root, cfg.recipes)).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md")) : []);
+  const outTools = []; // marked tool files sitting in GOVERNED out dirs (the only removal targets)
   const strayOrphans = cfg.outs.flatMap((o) => {
     const dir = join(root, o);
     if (!existsSync(dir)) return [];
     return readdirSync(dir, { withFileTypes: true })
       .filter((de) => de.isFile() && de.name.endsWith(".md") && !recipeSet.has(basename(de.name, ".md")))
+      .filter((de) => {
+        if (isMarkedTool(join(dir, de.name))) { outTools.push({ rel: `${o}/${de.name}`, abs: join(dir, de.name) }); return false; }
+        return true;
+      })
       .map((de) => `${o}/${de.name}`);
   });
   let enforceNote = null;
   let enforced = false;
-  if (!skipped.length && !gateFails.length && !excludedForgeRole.length && !strayOrphans.length && !cfg.enforceGenerated) {
+  let removedTools = [];
+  if (!skipped.length && !gateFails.length && !strayOrphans.length && !cfg.enforceGenerated) {
+    // Order matters (dual-review): persist the config FIRST, remove the tool files after — an
+    // I/O failure between the two then leaves strict mode ON with the tool still present, which
+    // the engine's marker-aware orphan scan tolerates (never the reverse: tool gone, mode off).
     const cfgPath = join(root, "forge.config.json");
     const onDisk = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, "utf8")) : (({ bricks, recipes, out, archive, deletePolicy }) => ({ bricks, recipes, out, archive, deletePolicy }))(cfg);
     onDisk.enforceGenerated = true;
     writeFileSync(cfgPath, JSON.stringify(onDisk, null, 2) + "\n");
     enforced = true;
-    enforceNote = "**100% of the scanned skills are now governed by the forge — `enforceGenerated: true` was enabled automatically.** From now on, a hand-made skill in the out dir fails `forge check`; create skills via `forge new` (or import them) instead.";
+    // Maintainer decision §8b.5: the ephemeral tool skill leaves with the enable. Removal is
+    // CONFINED to marked files inside the governed out dirs (never a --from source dir — a
+    // marked file there is the user's copy, not an installation of ours).
+    for (const t of outTools) { rmSync(t.abs, { force: true }); removedTools.push(t.rel.replace(/\\/g, "/")); }
+    enforceNote = `**100% of the scanned skills are now governed by the forge — \`enforceGenerated: true\` was enabled automatically.** From now on, a hand-made skill in the out dir fails \`forge check\`; create skills via \`forge new\` (or import them) instead.${removedTools.length ? ` The ephemeral tool skill (${removedTools.join(", ")}) was removed — \`forge onboard --install-skill\` brings it back on demand.` : ""}`;
   } else if (!cfg.enforceGenerated) {
-    const why = skipped.length ? `${skipped.length} skill(s) were skipped` : gateFails.length ? "the fidelity gate failed" : excludedForgeRole.length ? "a forge-role tool file sits in the out dir" : strayOrphans.length ? `un-governed file(s) remain in the out dir(s): ${strayOrphans.join(", ")}` : "";
+    const why = skipped.length ? `${skipped.length} skill(s) were skipped` : gateFails.length ? "the fidelity gate failed" : strayOrphans.length ? `un-governed file(s) remain in the out dir(s): ${strayOrphans.join(", ")}` : "";
     enforceNote = `enforceGenerated stays OFF (${why}). Once everything is migrated, enable it in forge.config.json so hand-made skills can't drift in unnoticed.`;
   }
 

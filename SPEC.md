@@ -239,9 +239,21 @@ Near-identical blocks are deliberately NOT factored (that semantic judgment is t
 Fase B's job, human-approved).
 
 **enforceGenerated auto-enable:** when the run ends 100% migrated (zero skips, zero gate
-failures, no forge-role tool file in the out dir) and `enforceGenerated` was off, it is flipped
-to `true` automatically and announced loudly — from then on a hand-made skill in the out dir
-fails `check`. Any skip downgrades this to a printed suggestion.
+failures, no un-governed stray in ANY out dir) and `enforceGenerated` was off, it is flipped to
+`true` automatically and announced loudly — from then on a hand-made skill in the out dir fails
+`check`. In the same step, an installed `forge-onboard` tool skill (identified by its marker) is
+**removed** so strict mode never sees it as an orphan — `forge onboard --install-skill` brings it
+back on demand. Any skip downgrades all of this to a printed suggestion (and the tool stays).
+
+**Assisted step (Fase B) — `forge onboard --install-skill`:** materializes the `forge-onboard`
+agent skill (frontmatter marker `forge-role: nbp-skillforge/onboard`; idempotent; never
+overwrites a same-named file without the marker) into the first out dir. Its logic is the
+**harness-neutral** protocol shipped as `assets/onboard/ONBOARD-SPEC.md` (the Claude Code file is
+a thin reference wrapper): the agent groups the similar-but-divergent sections across skills
+(dedup group = 1 candidate brick + N skills), proposes one canonical version + `{{param}}`s per
+group, the human approves **per group**, and every applied group is verified by execution
+(`build` + `check` + diff vs the run's backup). The engine never lets the LLM's output through
+unverified — the deterministic gates stay the judge.
 
 ## Safety & boundaries
 - Skill names (`new`/`rename`/`remove`/`restore`/`import`) and include paths must be a single

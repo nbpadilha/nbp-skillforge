@@ -7,6 +7,14 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **F-31 Fase 5 — assisted onboarding skill:** `forge onboard --install-skill` materializes the
+  `forge-onboard` agent skill (marked `forge-role: nbp-skillforge/onboard`; idempotent; never
+  overwrites an unmarked same-named file). Its logic ships harness-neutral as
+  `assets/onboard/ONBOARD-SPEC.md` — any capable agent can run Fase B: group the
+  similar-but-divergent sections, elect a canonical version per group, human approves per group,
+  every applied group verified by execution. On the 100%-migrated auto-enable, the ephemeral
+  tool skill is removed in the same step (restorable on demand) so strict mode never sees it as
+  an orphan.
 - **F-31 Fase 4 — `forge onboard --factor` (mechanical factoring):** byte-identical heading
   sections (fence-aware, ≥3 lines, no `{{param}}`) shared by ≥2 skills are extracted as
   deterministic `bricks/onboarded/<slug>-<sha8>.md` bricks and swapped for includes in each
