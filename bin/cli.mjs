@@ -110,14 +110,20 @@ switch (cmd) {
     if (dryRun) {
       if (r.ok) {
         const sym = { create: "+", change: "~", same: "=" };
-        for (const { name, status } of r.plan) console.log(`  ${sym[status]} ${name}${status === "same" ? "  (unchanged)" : ""}`);
+        // F-26: with N > 1 destinations each (name × out) pair is its own plan line, labeled with
+        // its destination; N === 1 keeps the historical line byte-identical (no label).
+        for (const { name, out, status } of r.plan) console.log(`  ${sym[status]} ${name}${r.destinations > 1 ? ` → ${out}` : ""}${status === "same" ? "  (unchanged)" : ""}`);
         const create = r.plan.filter((p) => p.status === "create").length;
         const change = r.plan.filter((p) => p.status === "change").length;
-        console.log(`dry-run: ${create} to create, ${change} to change, ${r.unchanged} unchanged (nothing written).`);
+        const multi = r.destinations > 1 ? ` across ${r.destinations} destination(s)` : "";
+        console.log(`dry-run: ${create} to create, ${change} to change, ${r.unchanged} unchanged${multi} (nothing written).`);
       }
       finish({ ...r, msg: r.ok ? undefined : "build aborted (see errors below)." });
     }
-    finish({ ...r, msg: r.ok ? `build: ${r.written} written, ${r.unchanged} unchanged.` : "build aborted (see errors below)." });
+    // F-26 (DECISION 6): aggregate-only summary; when N > 1 an "across N destination(s)" suffix
+    // is appended. N === 1 stays byte-identical to the historical line (retrocompat contract).
+    const multi = r.destinations > 1 ? ` across ${r.destinations} destination(s)` : "";
+    finish({ ...r, msg: r.ok ? `build: ${r.written} written, ${r.unchanged} unchanged${multi}.` : "build aborted (see errors below)." });
     break;
   }
   case "check": {

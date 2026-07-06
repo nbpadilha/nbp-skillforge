@@ -1,7 +1,10 @@
 {
   "bricks": "forge/bricks",
   "recipes": "forge/recipes",
-  "out": "commands",
+  "out": [
+    "commands",
+    "codex-prompts"
+  ],
   "archive": "forge/_archive",
   "enforceGenerated": true,
   "deletePolicy": "soft"

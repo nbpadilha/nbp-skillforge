@@ -83,8 +83,10 @@ existing hook). In a git repo, step 6 below is already done for you.
 }
 ```
 - Set `out` to where your agent platform reads skills (e.g. `.claude/commands`, `.codex/…`).
-- The four roles **must be distinct, non-nested** dirs (the engine rejects overlap — build/gc would
-  clobber source).
+  `out` also accepts an **array** to build the same skills into several platforms at once
+  (`"out": [".claude/commands", ".codex/prompts"]`) — the drift-gate then covers every destination.
+- The roles (`bricks`/`recipes`/`archive` and every `out` entry) **must be distinct, non-nested**
+  dirs (the engine rejects overlap — build/gc would clobber source).
 - Keep `conformance: true` (validates `name`/`description` against the SKILL.md standard).
 - Consider `enforceGenerated: true` later, once every output has a recipe (forbids hand-made skills).
 - Recommended: `.gitattributes` lines pinning EOL to LF for your `out` and forge dirs — e.g. with the

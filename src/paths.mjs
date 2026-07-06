@@ -36,6 +36,12 @@ export function canonFold(p) {
   return CASE_INSENSITIVE_FS ? r.toLowerCase() : r;
 }
 
+// F-26 (DECISION 5): the trivial, behavior-neutral distinctness CHECK, shared by the two
+// independent role-overlap sites (compose.mjs's build/check gate; lifecycle.mjs's init
+// sample-safety). Each call site keeps its OWN failure handling (hard `config error:` vs a
+// silent sampleSafe=false downgrade) — deliberately NOT unified. Callers canonicalize first.
+export const allDistinct = (paths) => new Set(paths).size === paths.length;
+
 // Pure containment predicate on two ALREADY-canonicalized (or already-resolved) paths —
 // `child === parent` counts as inside (exact-dir-match). Does not itself touch the filesystem;
 // callers choose whether to canon()/canonFold() their arguments first, or compare purely

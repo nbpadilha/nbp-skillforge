@@ -136,16 +136,39 @@ export function fenceMasker(text) {
   };
 }
 
+// F-26: `out` accepts string | non-empty array of non-empty strings. Validation lives HERE (the
+// one place that branches on the shape) — before this guard, `"out": ["a","b"]` reached
+// node:path's join() unguarded and crashed every command with a raw TypeError. The derived
+// `cfg.outs` (always an array) is the ONE iteration surface every consumer loops over; `cfg.out`
+// stays exactly as authored so init's config-scaffold write keeps round-tripping a single-out
+// config as a plain string.
+const userErr = (msg) => Object.assign(new Error(msg), { userFacing: true });
+function normalizeOut(cfg) {
+  const bad = () => { throw userErr(`forge.config.json: "out" must be a non-empty string or a non-empty array of non-empty strings`); };
+  if (typeof cfg.out === "string") { if (!cfg.out.trim()) bad(); cfg.outs = [cfg.out]; return cfg; }
+  if (Array.isArray(cfg.out)) {
+    if (cfg.out.length === 0 || cfg.out.some((o) => typeof o !== "string" || !o.trim())) bad();
+    // Exact-duplicate entries would slip past the pairwise role-overlap scan (two entries with the
+    // SAME literal key compare as self and are skipped) — reject them here with a precise message.
+    // Case-fold/canonical duplicates (`out: ["X","x"]` on Windows) are still the overlap scan's job.
+    const seen = new Set();
+    for (const o of cfg.out) { if (seen.has(o)) throw userErr(`forge.config.json: duplicate "out" entry: ${o}`); seen.add(o); }
+    cfg.outs = [...cfg.out];
+    return cfg;
+  }
+  bad();
+}
+
 export function loadConfig(root) {
   const p = join(root, "forge.config.json");
-  if (!existsSync(p)) return { ...DEFAULTS };
+  if (!existsSync(p)) return normalizeOut({ ...DEFAULTS });
   const text = readFileSync(p, "utf8"); // an unreadable file surfaces its own clear fs error
   let user;
   // Wrap ONLY the parse: a clean, user-facing message instead of a raw SyntaxError + stack trace.
   // Marked `userFacing` so the CLI prints just the message; other (unexpected) throws keep their stack.
   try { user = JSON.parse(text); }
   catch (e) { const err = new Error(`forge.config.json: invalid JSON (${e.message})`); err.userFacing = true; throw err; }
-  return { ...DEFAULTS, ...user };
+  return normalizeOut({ ...DEFAULTS, ...user });
 }
 
 // Brick paths included by a recipe's text (without .md). Basis for ref-counting. Backslashes are
@@ -320,54 +343,89 @@ function compose(name, cfg, root, errors, warnings) {
 // Returns { ok, drift, orphans, errors, warnings, count, written, unchanged, plan }.
 // `plan` (build mode) is [{ name, status }] with status "create" | "change" | "same".
 // `warnings` are NON-blocking (never affect `ok`/exit code) — e.g. an unused include param.
+// The role dirs must be mutually non-nested: build writes into out, and gc scans bricks
+// recursively — so any overlap (equal, or one inside another) could clobber/delete source files.
+// canonFold: realpath (resolves symlinks/junctions, canonical on-disk case) with a lexical
+// resolve() fallback for a role dir that doesn't exist yet, folded to lowercase on a
+// case-insensitive filesystem (Windows/macOS) so `Bricks` and `bricks` overlap — needed HERE
+// (not just plain canon()) because out/archive can both be simultaneously nonexistent
+// (fresh project, pre-first-build), which forces the fallback on both sides.
+// F-26: one entry PER out, keyed by its literal configured path (actionable message without
+// cross-referencing array indices); exact-duplicate literals were already rejected in loadConfig,
+// so ak !== bk never wrongly skips a real pair here. Growth is O((3+N)²) — trivially cheap.
+// EXPORTED (F-26 review fix, verified by a destructive repro): the mutating lifecycle commands
+// (remove/rename) delete a skill's output from every out dir BEFORE their follow-up run() would
+// ever validate the config — with a hostile `out` entry overlapping bricks/ they destroyed a
+// SOURCE brick first. They now call this same check pre-flight and fail closed, touching nothing.
+export function roleOverlapError(root, cfg) {
+  const R = [
+    ["bricks", canonFold(join(root, cfg.bricks))], ["recipes", canonFold(join(root, cfg.recipes))], ["archive", canonFold(join(root, cfg.archive))],
+    ...cfg.outs.map((o) => [cfg.outs.length === 1 ? "out" : `out '${o}'`, canonFold(join(root, o))]),
+  ];
+  for (const [ak, a] of R) for (const [bk, b] of R)
+    if (ak !== bk && isInside(b, a))
+      return `config error: '${bk}' must not be inside or equal to '${ak}' (build/gc would clobber source files)`;
+  return null;
+}
+
 export function run({ root = process.cwd(), mode = "build", dryRun = false } = {}) {
   const cfg = loadConfig(root);
   const recipesAbs = join(root, cfg.recipes);
-  const outAbs = join(root, cfg.out);
+  // F-26: N destinations. `cfg.outs` is the one always-array surface (loadConfig derives it);
+  // every loop below iterates (recipe × out). N=1 must reproduce the historical single-out
+  // behavior byte-for-byte — that is the retrocompat contract the tests pin.
+  const outsAbs = cfg.outs.map((o) => join(root, o));
   const bricksAbs = join(root, cfg.bricks);
   const archiveAbs = join(root, cfg.archive);
-  // The role dirs must be mutually non-nested: build writes into out, and gc scans bricks
-  // recursively — so any overlap (equal, or one inside another) could clobber/delete source files.
-  // canonFold: realpath (resolves symlinks/junctions, canonical on-disk case) with a lexical
-  // resolve() fallback for a role dir that doesn't exist yet, folded to lowercase on a
-  // case-insensitive filesystem (Windows/macOS) so `Bricks` and `bricks` overlap — needed HERE
-  // (not just plain canon()) because out/archive can both be simultaneously nonexistent
-  // (fresh project, pre-first-build), which forces the fallback on both sides.
-  const R = Object.entries({ bricks: bricksAbs, recipes: recipesAbs, out: outAbs, archive: archiveAbs }).map(([k, v]) => [k, canonFold(v)]);
-  for (const [ak, a] of R) for (const [bk, b] of R)
-    if (ak !== bk && isInside(b, a))
-      return { ok: false, errors: [{ kind: "config", msg: `config error: '${bk}' must not be inside or equal to '${ak}' (build/gc would clobber source files)` }], drift: 0, orphans: 0 };
-  if (!existsSync(recipesAbs)) return { ok: false, errors: [{ kind: "config", msg: `no recipes directory: ${cfg.recipes} — run \`npx nbp-skillforge init\` to scaffold a forge project` }], drift: 0, orphans: 0 };
+  // Early error returns still carry `destinations` (review fix: the SPEC documents it as always
+  // present on build/check results — a JSON consumer must never branch on its absence).
+  const overlap = roleOverlapError(root, cfg);
+  if (overlap)
+    return { ok: false, errors: [{ kind: "config", msg: overlap }], drift: 0, orphans: 0, destinations: cfg.outs.length };
+  if (!existsSync(recipesAbs)) return { ok: false, errors: [{ kind: "config", msg: `no recipes directory: ${cfg.recipes} — run \`npx nbp-skillforge init\` to scaffold a forge project` }], drift: 0, orphans: 0, destinations: cfg.outs.length };
 
   const names = readdirSync(recipesAbs).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md"));
   const errors = [];
   const warnings = [];
-  const plan = []; // build mode: [{ name, dest, built, status }] — status drives skip-if-unchanged
+  const plan = []; // build mode: [{ name, out, dest, built, status }] — status drives skip-if-unchanged
   let drift = 0;
 
   for (const name of names) {
+    // Composed ONCE per recipe — content depends only on recipe/bricks/params, never on the
+    // destination (the banner names the recipe, not the out dir) — then written to N places.
     const built = compose(name, cfg, root, errors, warnings); // always LF (compose normalizes its inputs)
-    const dest = join(outAbs, name + ".md");
-    const raw = existsSync(dest) ? readFileSync(dest, "utf8") : null;
-    if (mode === "check") {
-      if (raw === null) { drift++; errors.push({ kind: "drift", skill: name, msg: `drift: ${cfg.out}/${name}.md is missing (run \`npx nbp-skillforge build\`)` }); continue; }
-      // Drift-gate is CR-insensitive: a CRLF checkout (git autocrlf) is NOT a false positive.
-      const cur = raw.replace(/\r\n/g, "\n");
-      if (cur !== built) { drift++; errors.push({ kind: "drift", skill: name, msg: `drift: ${cfg.out}/${name}.md is out of sync with its recipe${firstDiffSuffix(built, cur)}` }); }
-    } else {
-      // Build compares RAW bytes so it stays the source of the "output is always LF" guarantee:
-      // a CRLF-on-disk output differs from the LF `built`, so it is rewritten (healed), not skipped.
-      // Only a byte-identical (LF) file is "same" → the skip-if-unchanged no-op.
-      plan.push({ name, dest, built, status: raw === null ? "create" : raw !== built ? "change" : "same" });
+    for (let i = 0; i < outsAbs.length; i++) {
+      const outEntry = cfg.outs[i];
+      const dest = join(outsAbs[i], name + ".md");
+      const raw = existsSync(dest) ? readFileSync(dest, "utf8") : null;
+      if (mode === "check") {
+        // Drift in ANY destination fails the gate; each drifted destination is reported by name.
+        if (raw === null) { drift++; errors.push({ kind: "drift", skill: name, msg: `drift: ${outEntry}/${name}.md is missing (run \`npx nbp-skillforge build\`)` }); continue; }
+        // Drift-gate is CR-insensitive: a CRLF checkout (git autocrlf) is NOT a false positive.
+        const cur = raw.replace(/\r\n/g, "\n");
+        if (cur !== built) { drift++; errors.push({ kind: "drift", skill: name, msg: `drift: ${outEntry}/${name}.md is out of sync with its recipe${firstDiffSuffix(built, cur)}` }); }
+      } else {
+        // Build compares RAW bytes so it stays the source of the "output is always LF" guarantee:
+        // a CRLF-on-disk output differs from the LF `built`, so it is rewritten (healed), not skipped.
+        // Only a byte-identical (LF) file is "same" → the skip-if-unchanged no-op. PER DESTINATION:
+        // a recipe already correct in out[0] but stale/missing in out[1] writes only out[1].
+        plan.push({ name, out: outEntry, dest, built, status: raw === null ? "create" : raw !== built ? "change" : "same" });
+      }
     }
   }
 
   let orphans = 0;
-  if (cfg.enforceGenerated && existsSync(outAbs)) {
+  if (cfg.enforceGenerated) {
     const recipeNames = new Set(names);
-    for (const f of readdirSync(outAbs).filter((f) => f.endsWith(".md"))) {
-      const n = basename(f, ".md");
-      if (!recipeNames.has(n)) { orphans++; errors.push({ kind: "orphan", skill: n, msg: `orphan: ${cfg.out}/${n}.md has no recipe (enforceGenerated)` }); }
+    // F-26: every out dir is scanned independently — an orphan in out[1] alone is still an orphan.
+    // A recipe never built to a newly-added out entry is NOT an orphan there (nothing extra sits
+    // on disk); that case is check's "missing" drift above — orphan = extra un-owned file.
+    for (let i = 0; i < outsAbs.length; i++) {
+      if (!existsSync(outsAbs[i])) continue;
+      for (const f of readdirSync(outsAbs[i]).filter((f) => f.endsWith(".md"))) {
+        const n = basename(f, ".md");
+        if (!recipeNames.has(n)) { orphans++; errors.push({ kind: "orphan", skill: n, msg: `orphan: ${cfg.outs[i]}/${n}.md has no recipe (enforceGenerated)` }); }
+      }
     }
   }
 
@@ -391,6 +449,11 @@ export function run({ root = process.cwd(), mode = "build", dryRun = false } = {
   const unchanged = mode === "build" ? plan.filter((p) => p.status === "same").length : 0;
   return {
     ok: errors.length === 0, drift, orphans, errors, warnings, count: names.length, written, unchanged,
-    plan: mode === "build" ? plan.map(({ name, status }) => ({ name, status })) : undefined,
+    // F-26 (DECISION 2): plan entries are { name, out, status } — one per (recipe × out) pair,
+    // `out` ALWAYS present (even N=1) so --json consumers never branch on config shape. This is
+    // the one documented breaking change to the --json build output.
+    plan: mode === "build" ? plan.map(({ name, out, status }) => ({ name, out, status })) : undefined,
+    // DECISION 6: the CLI appends "across N destination(s)" to the build summary only when N > 1.
+    destinations: cfg.outs.length,
   };
 }

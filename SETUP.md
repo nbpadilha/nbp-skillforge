@@ -36,6 +36,9 @@ agent) are about to edit one and see the banner, **stop and go to the recipe**.
   "conformance": true
 }
 ```
+- **`out`** — also accepts an **array** (`"out": [".claude/commands", ".codex/prompts"]`): one
+  recipe set, N destinations — every skill is built into each dir, and the drift-gate covers all
+  of them. See SPEC.md's Config section for the exact semantics.
 - **`deletePolicy`** — `soft` (move to `_archive/`, recoverable) or `hard` (delete permanently).
   Any other/unknown value is treated as `soft` (fail-closed).
 - **`enforceGenerated`** — when `true`, `check` requires every output file to have a recipe,
