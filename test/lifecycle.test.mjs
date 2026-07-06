@@ -1026,3 +1026,89 @@ test("import: a forge-role-shaped line in the BODY only (not fm) does NOT warn",
     assert.equal(r.warnings?.length ?? 0, 0, "no warning for a body-only mention");
   } finally { cleanup(root); }
 });
+
+// ═══ F-26: lifecycle under N destinations ═══════════════════════════════════════════════════
+test("F-26 remove: the generated command is deleted from EVERY out dir that has it", () => {
+  const root = makeRoot({
+    config: { out: ["out", "second-out"] },
+    bricks: { solo: "body" },
+    recipes: { only: "---\nname: only\n---\n# only\n\n<!-- include: solo -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    assert.equal(has(join(root, "out", "only.md")), true);
+    assert.equal(has(join(root, "second-out", "only.md")), true);
+    const r = remove("only", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(has(join(root, "out", "only.md")), false, "out[0] cleaned");
+    assert.equal(has(join(root, "second-out", "only.md")), false, "out[1] cleaned");
+  } finally { cleanup(root); }
+});
+
+test("F-26 rename: the stale old output is removed from every out dir; new one generated in all", () => {
+  const root = makeRoot({
+    config: { out: ["out", "second-out"] },
+    recipes: { velho: "---\nname: velho\ndescription: d.\n---\n# velho\nbody\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const r = rename("velho", "novo", { root });
+    assert.equal(r.ok, true, r.msg);
+    for (const dir of ["out", "second-out"]) {
+      assert.equal(has(join(root, dir, "velho.md")), false, `stale old output gone in ${dir}`);
+      assert.equal(has(join(root, dir, "novo.md")), true, `new output generated in ${dir}`);
+    }
+  } finally { cleanup(root); }
+});
+
+test("F-26 init: a hello.md sitting in out[1] alone makes the sample unsafe (not seeded)", () => {
+  const root = makeRoot({ config: { out: ["out", "second-out"] } });
+  try {
+    write(join(root, "second-out", "hello.md"), "hand-written, must survive\n");
+    const r = init(root, { hooks: false });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(has(join(root, "recipes", "hello.md")), false, "sample recipe NOT seeded");
+    assert.equal(read(join(root, "second-out", "hello.md")), "hand-written, must survive\n", "user file untouched");
+  } finally { cleanup(root); }
+});
+
+test("F-26 init: scaffold write round-trips a fresh project's out as a plain STRING", () => {
+  const root = bareRoot();
+  try {
+    const r = init(root, { hooks: false });
+    assert.equal(r.ok, true, r.msg);
+    const cfg = JSON.parse(read(join(root, "forge.config.json")));
+    assert.equal(typeof cfg.out, "string", "a fresh init writes out as a string, never an array");
+    assert.equal("outs" in cfg, false, "the derived outs field never leaks into the scaffold");
+  } finally { cleanup(root); }
+});
+
+// ═══ F-26 review fix (destructive repro): remove/rename fail CLOSED on a role-overlapping out ═══
+test("F-26 remove: a hostile out entry overlapping bricks/ is refused BEFORE any deletion", () => {
+  const root = makeRoot({
+    config: { out: ["out", "bricks"] }, // out[1] === the bricks role — hostile/misconfigured
+    bricks: { vict: "USER SOURCE BRICK — must survive" },
+    recipes: { vict: "---\nname: vict\n---\nbody\n" },
+  });
+  try {
+    const r = remove("vict", { root });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /must not be inside or equal to/);
+    assert.equal(read(brick(root, "vict")), "USER SOURCE BRICK — must survive", "source brick untouched");
+    assert.equal(has(recipe(root, "vict")), true, "recipe untouched (nothing archived)");
+  } finally { cleanup(root); }
+});
+
+test("F-26 rename: same pre-flight — refused before any mutation on a role-overlapping config", () => {
+  const root = makeRoot({
+    config: { out: ["out", "recipes"] },
+    recipes: { vict: "---\nname: vict\ndescription: d.\n---\nbody\n" },
+  });
+  try {
+    const r = rename("vict", "novo", { root });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /must not be inside or equal to/);
+    assert.equal(has(recipe(root, "vict")), true, "recipe not moved");
+    assert.equal(has(recipe(root, "novo")), false);
+  } finally { cleanup(root); }
+});

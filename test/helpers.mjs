@@ -21,7 +21,10 @@ export function makeRoot({ config = {}, recipes = {}, bricks = {}, out = {} } = 
   writeFileSync(join(root, "forge.config.json"), JSON.stringify(cfg, null, 2));
   for (const [name, text] of Object.entries(recipes)) write(join(root, cfg.recipes, name + ".md"), text);
   for (const [name, text] of Object.entries(bricks)) write(join(root, cfg.bricks, name + ".md"), text);
-  for (const [name, text] of Object.entries(out)) write(join(root, cfg.out, name + ".md"), text);
+  // F-26: cfg.out may be an array — out fixtures land in the FIRST destination (tests that need
+  // a file in out[1..] write it explicitly with write()).
+  const outDir = Array.isArray(cfg.out) ? cfg.out[0] : cfg.out;
+  for (const [name, text] of Object.entries(out)) write(join(root, outDir, name + ".md"), text);
   return root;
 }
 

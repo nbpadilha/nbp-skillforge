@@ -415,14 +415,15 @@ test("build: skip-if-unchanged — a re-build writes nothing and leaves `written
     const first = run({ root, mode: "build" });
     assert.equal(first.written, 1);
     assert.equal(first.unchanged, 0);
-    assert.deepEqual(first.plan, [{ name: "s", status: "create" }]);
+    // F-26 (DECISION 2): plan entries carry `out` ALWAYS, even for N=1 — one shape, no branching.
+    assert.deepEqual(first.plan, [{ name: "s", out: "out", status: "create" }]);
 
     // Second build of identical inputs: nothing on disk changes.
     const before = readRaw(outFile(root, "s"));
     const second = run({ root, mode: "build" });
     assert.equal(second.written, 0, "unchanged output must not be rewritten");
     assert.equal(second.unchanged, 1);
-    assert.deepEqual(second.plan, [{ name: "s", status: "same" }]);
+    assert.deepEqual(second.plan, [{ name: "s", out: "out", status: "same" }]);
     assert.deepEqual(readRaw(outFile(root, "s")), before, "bytes must be byte-identical");
   } finally { cleanup(root); }
 });
@@ -479,7 +480,7 @@ test("build --dry-run: classifies without writing anything", () => {
     assert.equal(r.ok, true, r.errors?.map(e => e.msg).join("; "));
     assert.equal(r.written, 0, "dry-run must never write");
     assert.equal(has(outFile(root, "d")), false, "no output file is created");
-    assert.deepEqual(r.plan, [{ name: "d", status: "create" }]);
+    assert.deepEqual(r.plan, [{ name: "d", out: "out", status: "create" }]); // F-26: `out` always present
   } finally { cleanup(root); }
 });
 
@@ -1060,4 +1061,120 @@ test("includesOf: immune to a dirty lastIndex on the exported INCLUDE regex", as
   const text = "---\nname: x\n---\n<!-- include: first -->\nmid\n<!-- include: second -->\n";
   INCLUDE.lastIndex = 30; // simulate an external consumer that ran .exec()/.test() and stopped midway
   assert.deepEqual(includesOf(text), ["first", "second"], "ref-count must see ALL includes despite dirty state");
+});
+
+// ═══ F-26: multi-out (`out` as string | string[]) ═══════════════════════════════════════════
+test("F-26 config: out as an ARRAY no longer crashes — builds to every destination", () => {
+  const root = makeRoot({
+    config: { out: ["out", "second-out"] },
+    bricks: { b: "shared body" },
+    recipes: { s: "---\nname: s\n---\n# s\n\n<!-- include: b -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.map(e => e.msg).join("; "));
+    assert.equal(r.written, 2, "one write per destination");
+    assert.equal(r.destinations, 2);
+    const a = read(join(root, "out", "s.md"));
+    const b = read(join(root, "second-out", "s.md"));
+    assert.equal(a, b, "both destinations carry byte-identical content");
+    assert.deepEqual(r.plan, [
+      { name: "s", out: "out", status: "create" },
+      { name: "s", out: "second-out", status: "create" },
+    ]);
+  } finally { cleanup(root); }
+});
+
+test("F-26 config: invalid out shapes are clean user-facing errors (the old TypeError crash)", () => {
+  for (const bad of [[], [""], ["a", 42], "", 7, { x: 1 }]) {
+    const root = makeRoot({ config: { out: bad } });
+    try {
+      assert.throws(() => run({ root, mode: "build" }),
+        (e) => e.userFacing === true && /"out" must be a non-empty string or a non-empty array/.test(e.message),
+        `expected a clean userFacing error for out=${JSON.stringify(bad)}`);
+    } finally { cleanup(root); }
+  }
+});
+
+test("F-26 config: an exact-duplicate out entry is rejected with a precise message", () => {
+  const root = makeRoot({ config: { out: ["x", "x"] } });
+  try {
+    assert.throws(() => run({ root, mode: "build" }),
+      (e) => e.userFacing === true && /duplicate "out" entry: x/.test(e.message));
+  } finally { cleanup(root); }
+});
+
+test("F-26 config: two out entries that only differ by nesting are a config error", () => {
+  const root = makeRoot({
+    config: { out: ["out", "out/nested"] },
+    recipes: { s: "---\nname: s\n---\n# s\nbody\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => e.kind === "config" && /must not be inside or equal to/.test(e.msg)));
+  } finally { cleanup(root); }
+});
+
+test("F-26 build: skip-if-unchanged is PER DESTINATION (stale out[1] alone rewrites only out[1])", () => {
+  const root = makeRoot({
+    config: { out: ["out", "second-out"] },
+    bricks: { b: "body" },
+    recipes: { s: "---\nname: s\n---\n# s\n\n<!-- include: b -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    write(join(root, "second-out", "s.md"), "hand-tampered\n"); // out[0] stays correct
+    const r = run({ root, mode: "build" });
+    assert.equal(r.written, 1, "only the stale destination is rewritten");
+    assert.equal(r.unchanged, 1);
+    assert.equal(r.plan.find((p) => p.out === "out").status, "same");
+    assert.equal(r.plan.find((p) => p.out === "second-out").status, "change");
+  } finally { cleanup(root); }
+});
+
+test("F-26 check: drift in ANY destination fails, naming exactly the drifted one", () => {
+  const root = makeRoot({
+    config: { out: ["out", "second-out"] },
+    bricks: { b: "body" },
+    recipes: { s: "---\nname: s\n---\n# s\n\n<!-- include: b -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    write(join(root, "second-out", "s.md"), "tampered\n");
+    const r = run({ root, mode: "check" });
+    assert.equal(r.ok, false);
+    assert.equal(r.drift, 1, "exactly one drifted (name × out) pair");
+    assert.ok(r.errors.some((e) => e.kind === "drift" && e.msg.includes("second-out/s.md")), "message names the drifted destination");
+    assert.ok(!r.errors.some((e) => e.msg.includes("out/s.md is out of sync") && !e.msg.includes("second-out")), "the in-sync destination is not reported");
+  } finally { cleanup(root); }
+});
+
+test("F-26 enforceGenerated: an orphan in out[1] alone is still reported (per-destination scan)", () => {
+  const root = makeRoot({
+    config: { out: ["out", "second-out"], enforceGenerated: true },
+    bricks: { b: "body" },
+    recipes: { s: "---\nname: s\n---\n# s\n\n<!-- include: b -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    write(join(root, "second-out", "rogue.md"), "hand-made\n");
+    const r = run({ root, mode: "check" });
+    assert.equal(r.ok, false);
+    assert.equal(r.orphans, 1);
+    assert.ok(r.errors.some((e) => e.kind === "orphan" && e.msg.includes("second-out/rogue.md")));
+  } finally { cleanup(root); }
+});
+
+test("F-26 retrocompat: a single-string out keeps destinations=1 and the exact plan/counters", () => {
+  const root = makeRoot({
+    bricks: { b: "body" },
+    recipes: { s: "---\nname: s\n---\n# s\n\n<!-- include: b -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.destinations, 1);
+    assert.equal(r.written, 1);
+    assert.equal(r.count, 1);
+  } finally { cleanup(root); }
 });

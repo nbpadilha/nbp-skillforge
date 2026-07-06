@@ -7,6 +7,24 @@ All notable changes to this project are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **F-26 multi-out:** `forge.config.json`'s `out` now accepts **`string | string[]`** — one recipe
+  set, N destinations. `build` composes each recipe once and writes it to every out dir
+  (skip-if-unchanged per destination); `check` fails on drift in any destination, naming the
+  drifted one; `enforceGenerated` scans every destination; `remove`/`rename` clean the skill's
+  output from every destination; `init`'s sample-safety honors every destination and still
+  scaffolds the single-string form. The CLI build summary appends `across N destination(s)` when
+  N > 1 (single-destination output is byte-identical to before). The runnable example now builds
+  to two destinations (`examples/commands` + `examples/codex-prompts`).
+
+### Fixed
+- **`"out": [...]` no longer crashes with a raw `TypeError`** — a malformed `out` (bad shape,
+  empty array/string, duplicate entry) is a clean, user-facing `forge.config.json` error on every
+  command (previously an unhandled stack trace from `node:path`).
+
+### Changed (breaking, documented)
+- **`--json build`'s `plan` entries are now `{ name, out, status }`** (was `{ name, status }`) —
+  one entry per (recipe × out) pair, `out` always present so consumers never branch on config
+  shape. `build`/`check` results also gain a `destinations` count.
 - **F-31 Fase 1 (onboarding foundation):** engine primitives exported for the upcoming assisted
   onboarding — `fenceMasker`, `validateConformance`, `INCLUDE`, `PLACEHOLDER_RE` (single source of
   truth for the `{{param}}` charset, now also used by the engine's own substitution),

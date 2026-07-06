@@ -123,8 +123,15 @@ Optional; every field falls back to the default below when the file is absent or
   "conformance": true
 }
 ```
-- **`bricks` / `recipes` / `out` / `archive`** — the four role dirs. Must be **distinct, non-nested**
+- **`bricks` / `recipes` / `out` / `archive`** — the role dirs. Must be **distinct, non-nested**
   (see Safety & boundaries).
+- **`out` accepts `string | string[]`** (non-empty array of non-empty strings). With an array,
+  `build` composes each recipe **once** and writes it to **every** destination (skip-if-unchanged
+  is per destination); `check` fails on drift in **any** destination, naming the drifted one;
+  `enforceGenerated` scans every destination; `remove`/`rename` clean the skill's output from every
+  destination. Exact-duplicate entries are rejected (`duplicate "out" entry`); nested/equal entries
+  are a `config error`. A malformed shape is a clean error, never a crash. A single string stays
+  byte-identical to the historical behavior — `init` always scaffolds the string form.
 - **`deletePolicy`** — `soft` (move to `_archive/`, recoverable) or `hard` (delete permanently).
   Fails closed: any value other than `hard` is treated as `soft`.
 - **`enforceGenerated`** — when `true`, `check` requires every output file to have a recipe,
@@ -144,8 +151,8 @@ accepted but has no effect on their output.
 
 | Command | Result shape (`JSON.parse`-able) |
 |---|---|
-| `build` / `build --dry-run` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged, plan }` — `plan` is `[{ name, status }]` (`status`: `"create"` \| `"change"` \| `"same"`). No `msg` field. |
-| `check` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged }`. No `msg` field. |
+| `build` / `build --dry-run` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged, plan, destinations }` — `plan` is `[{ name, out, status }]`, one entry per (recipe × out) pair (`status`: `"create"` \| `"change"` \| `"same"`); `out` is **always present**, even single-destination, so consumers never branch on config shape. `destinations` = number of out entries. No `msg` field. |
+| `check` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged, destinations }`. No `msg` field. |
 | `list` | `{ ok, skills, bricks, msg }` — `skills` is `[{ skill, bricks: [name, ...] }]`; `bricks` is `[{ brick, refCount, usedBy: [skill, ...] }]`. |
 | `gc` | `{ ok, orphans, applied, msg }` — `orphans` is `[brick, ...]`; `applied` is `true` only with `--apply`. |
 
@@ -202,8 +209,9 @@ accepted but has no effect on their output.
   names, and control chars are rejected, so a recipe or argument can't read or delete files outside
   the configured `bricks`/`recipes` dirs. `remove` additionally realpath-checks a brick before
   deleting it.
-- The `bricks`/`recipes`/`out`/`archive` roles must be **distinct, non-nested** directories
-  (checked, case-insensitive on Windows/macOS, symlink-resolved when they exist).
+- The `bricks`/`recipes`/`archive` roles and **every `out` entry** must be **pairwise distinct,
+  non-nested** directories (checked, case-insensitive on Windows/macOS, symlink-resolved when they
+  exist). With multiple out entries the error message names the offending literal path.
 - **Symlinked bricks are rejected at build.** A **symlink inside `bricks/`** whose target resolves
   outside the tree is a **build error** (`include resolves outside bricks/ (symlink?)`), not followed
   — the on-disk identity check (added with case-mismatch detection) `realpath`-resolves each brick and

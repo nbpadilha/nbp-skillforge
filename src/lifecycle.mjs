@@ -4,9 +4,9 @@
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync, rmdirSync, renameSync, realpathSync, statSync } from "node:fs";
 import { join, dirname, basename, relative, resolve, sep } from "node:path";
-import { loadConfig, run, includesOf, brickConsumers, splitFm, isConformantName, GENERATED_BANNER_RE, hasForgeRole } from "./compose.mjs";
+import { loadConfig, run, includesOf, brickConsumers, splitFm, isConformantName, GENERATED_BANNER_RE, hasForgeRole, roleOverlapError } from "./compose.mjs";
 import { installHooks } from "./hooks.mjs";
-import { canonFold, isInside } from "./paths.mjs";
+import { canonFold, isInside, allDistinct } from "./paths.mjs";
 
 const mdFiles = (dir) =>
   // Normalize separators: readdirSync({recursive}) yields OS-native backslashes on Windows, but
@@ -91,7 +91,11 @@ function paths(root, cfg = loadConfig(root)) {
     cfg,
     recipes: join(root, cfg.recipes),
     bricks: join(root, cfg.bricks),
-    out: join(root, cfg.out),
+    // F-26 (DECISION 3): the singular `out` is deliberately GONE — `outs` (always an array) is the
+    // sole destination surface, so a future call site can't silently ignore out[1..] by reaching
+    // for a singular path. Only cfg.out (as authored, string-or-array) survives, for init's
+    // config-scaffold round-trip.
+    outs: cfg.outs.map((o) => join(root, o)),
     archive: join(root, cfg.archive),
   };
 }
@@ -179,6 +183,11 @@ export function remove(skill, { root = process.cwd(), hard = false } = {}) {
   const bad = unsafeName(skill);
   if (bad) return { ok: false, msg: bad };
   const P = paths(root);
+  // F-26 review fix (destructive repro): with a hostile `out` entry overlapping bricks/, the
+  // P.outs deletion below would destroy a SOURCE brick before the follow-up run() ever rejected
+  // the config. Fail CLOSED before touching anything — same check, same message, just pre-flight.
+  const overlap = roleOverlapError(root, P.cfg);
+  if (overlap) return { ok: false, msg: overlap };
   // Fail CLOSED: only an explicit `--hard` or deletePolicy:"hard" hard-deletes; any other value
   // (typo, missing) is treated as soft, so a misconfig never silently destroys files.
   const policy = (hard || P.cfg.deletePolicy === "hard") ? "hard" : "soft";
@@ -211,8 +220,12 @@ export function remove(skill, { root = process.cwd(), hard = false } = {}) {
       pruneEmptyDirs(dirname(src), P.bricks); // F-10
     }
   }
-  const cmd = join(P.out, skill + ".md");
-  if (existsSync(cmd)) rmSync(cmd); // the command is build output
+  // F-26: the generated command is deleted from EVERY out dir that has it (silently skip one
+  // where it was never built — same if-exists guard as before, just looped).
+  for (const outDir of P.outs) {
+    const cmd = join(outDir, skill + ".md");
+    if (existsSync(cmd)) rmSync(cmd); // the command is build output
+  }
 
   const r = run({ root, mode: "build" });
   const verb = policy === "soft" ? "Archived" : "Deleted";
@@ -306,7 +319,9 @@ export function init(root = process.cwd(), { hooks = true } = {}) {
   let build = null;
   const brickPath = join(P.bricks, "footer.md");
   const recipePath = join(P.recipes, "hello.md");
-  const outPath = join(P.out, "hello.md");
+  // F-26: the sample is unsafe if hello.md already exists in ANY out dir — a hand-written
+  // hello command sitting in out[1] must be exactly as protected as one in out[0].
+  const outPaths = P.outs.map((o) => join(o, "hello.md"));
   const hasRecipes = readdirSync(P.recipes).some((f) => f.endsWith(".md"));
   // Canonicalize so the bricks/recipes/out roles must be three genuinely distinct dirs (realpath
   // resolves symlinks/trailing slashes; falls back to resolve() for a dir that doesn't exist yet).
@@ -317,9 +332,12 @@ export function init(root = process.cwd(), { hooks = true } = {}) {
   // vs `out: "FOO"`) would otherwise slip past as "3 distinct dirs" and let init seed the sample
   // into colliding folders. If any two coincide, the build would treat a brick as a recipe or
   // overwrite a recipe with its output — so skip the sample.
-  const distinctRoles = new Set([canonFold(P.bricks), canonFold(P.recipes), canonFold(P.out)]).size === 3;
+  // F-26: bricks, recipes and EVERY out entry must be pairwise-distinct (allDistinct — shared
+  // check, own failure handling: init silently downgrades sampleSafe instead of erroring, because
+  // init's job is "scaffold what's safe", not "validate the whole config" — build/check does that).
+  const distinctRoles = allDistinct([canonFold(P.bricks), canonFold(P.recipes), ...P.outs.map(canonFold)]);
   const sampleSafe = !hasRecipes && distinctRoles &&
-    !existsSync(brickPath) && !existsSync(recipePath) && !existsSync(outPath);
+    !existsSync(brickPath) && !existsSync(recipePath) && !outPaths.some(existsSync);
   if (sampleSafe) {
     writeFileSync(brickPath, `---\npiece: footer\nsummary: shared closing line, parameterized by project\n---\n_Generated for **{{project}}** by nbp-skillforge — edit the recipe/brick, not this file._\n`);
     writeFileSync(recipePath, `---\nname: hello\ndescription: sample skill — replace me\n---\n# hello\n\nThis is a sample skill. Reuse shared bricks with an include directive:\n\n<!-- include: footer | project=my-app -->\n`);
@@ -363,6 +381,10 @@ export function rename(oldName, newName, { root = process.cwd() } = {}) {
   const badOld = unsafeName(oldName); if (badOld) return { ok: false, msg: badOld };
   const badNew = unsafeName(newName); if (badNew) return { ok: false, msg: badNew };
   const P = paths(root);
+  // F-26 review fix: same pre-flight as remove() — rename deletes the old output from every out
+  // dir before its follow-up build; a role-overlapping config must be refused before any mutation.
+  const overlap = roleOverlapError(root, P.cfg);
+  if (overlap) return { ok: false, msg: overlap };
   const src = join(P.recipes, oldName + ".md");
   const dest = join(P.recipes, newName + ".md");
   if (!existsSync(src)) return { ok: false, msg: `skill not found: ${oldName}` };
@@ -406,8 +428,12 @@ export function rename(oldName, newName, { root = process.cwd() } = {}) {
     writeFileSync(src, `---\n${fmOut}${fmOut ? "\n" : ""}---\n${body}`);
   }
   move(src, dest);
-  const oldCmd = join(P.out, oldName + ".md");
-  if (existsSync(oldCmd)) rmSync(oldCmd); // old command is now an orphan
+  // F-26: the stale old-named output is removed from every out dir that has it, before the
+  // follow-up build regenerates the new name into every out dir.
+  for (const outDir of P.outs) {
+    const oldCmd = join(outDir, oldName + ".md");
+    if (existsSync(oldCmd)) rmSync(oldCmd); // old command is now an orphan
+  }
   const r = run({ root, mode: "build" });
   const actionMsg = `skill "${oldName}" → "${newName}" (old command removed, new one generated).`;
   return { ok: r.ok, command: { ok: true, msg: actionMsg }, build: r, errors: r.errors, warnings: r.warnings, msg: composeMsg(actionMsg, r) };

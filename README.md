@@ -17,7 +17,7 @@ Once you run more than a couple of agent skills, keeping them consistent by hand
 
 - **One edit, every skill current.** Change the brick; every skill that uses it is up to date on the next build. No hunting copies.
 - **It never ships a drifted skill.** `forge check` fails the moment a generated skill diverges from its source — in CI, in your pre-commit hook. "Which copy is right?" stops being a question.
-- **Portable, zero lock-in.** Output is a standard, self-contained `SKILL.md`/command file — works with Claude Code, Codex, Cursor, and anything that reads the format. No proprietary syntax leaks into it.
+- **Portable, zero lock-in.** Output is a standard, self-contained `SKILL.md`/command file — works with Claude Code, Codex, Cursor, and anything that reads the format. No proprietary syntax leaks into it. One recipe set can even build to **several destinations at once** (`"out": [".claude/commands", ".codex/prompts"]`) — same skills, N agent platforms, one source of truth.
 - **Zero runtime dependencies.** One small CLI, Node ≥ 18. Nothing to audit, nothing to break.
 
 ## Adopt in minutes, leave in seconds
