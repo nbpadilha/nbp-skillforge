@@ -23,6 +23,6 @@ output:
 ```
 
 **Environment**
-- nbp-forge version:
+- nbp-skillforge version:
 - Node version (`node -v`):
 - OS:

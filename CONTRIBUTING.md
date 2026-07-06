@@ -1,6 +1,6 @@
-# Contributing to nbp-forge
+# Contributing to nbp-skillforge
 
-Thanks for your interest! nbp-forge is a small, **zero-runtime-dependency** ESM tool. The bar is: keep it tiny, deterministic, and safe with users' files.
+Thanks for your interest! nbp-skillforge is a small, **zero-runtime-dependency** ESM tool. The bar is: keep it tiny, deterministic, and safe with users' files.
 
 ## Dev setup
 - Node **≥ 18** (uses `readdirSync(.., {recursive:true})`, `??=`). No install step — there are no runtime deps.

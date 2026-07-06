@@ -15,16 +15,16 @@ const node = process.execPath;
 // the --json path never leaks a decorated line onto stderr even when the command succeeds.
 const runCli = (args) => spawnSync(node, [cli, ...args], { encoding: "utf8" });
 
-test("--version prints `nbp-forge <version>` and exits 0", () => {
+test("--version prints `nbp-skillforge <version>` and exits 0", () => {
   const out = execFileSync(node, [cli, "--version"], { encoding: "utf8" });
-  assert.equal(out.trim(), `nbp-forge ${pkg.version}`);
+  assert.equal(out.trim(), `nbp-skillforge ${pkg.version}`);
   // -v alias
-  assert.equal(execFileSync(node, [cli, "-v"], { encoding: "utf8" }).trim(), `nbp-forge ${pkg.version}`);
+  assert.equal(execFileSync(node, [cli, "-v"], { encoding: "utf8" }).trim(), `nbp-skillforge ${pkg.version}`);
 });
 
 test("help exits 0 and lists commands", () => {
   const out = execFileSync(node, [cli, "help"], { encoding: "utf8" });
-  assert.match(out, /usage: nbp-forge <command>/);
+  assert.match(out, /usage: nbp-skillforge <command>/);
   assert.match(out, /install-hooks/);
 });
 
@@ -59,9 +59,9 @@ test("missing required positional args exit non-zero (no undefined.md)", () => {
 
 test("--help wins over an unknown flag (exit 0, shows help)", () => {
   const out = execFileSync(node, [cli, "--help", "--bogus"], { encoding: "utf8" });
-  assert.match(out, /usage: nbp-forge <command>/);
+  assert.match(out, /usage: nbp-skillforge <command>/);
   // --version too
-  assert.equal(execFileSync(node, [cli, "--version", "--bogus"], { encoding: "utf8" }).trim(), `nbp-forge ${pkg.version}`);
+  assert.equal(execFileSync(node, [cli, "--version", "--bogus"], { encoding: "utf8" }).trim(), `nbp-skillforge ${pkg.version}`);
 });
 
 test("an option missing its value exits 2", () => {

@@ -1,4 +1,4 @@
-// nbp-forge — skill lifecycle: new / remove / restore / gc / rename.
+// nbp-skillforge — skill lifecycle: new / remove / restore / gc / rename.
 // Ref-counted soft-delete: removing a skill archives its recipe + the bricks it EXCLUSIVELY owns
 // (ref-count would drop to 0); shared bricks stay. Everything is recoverable (versioned).
 
@@ -309,7 +309,7 @@ export function init(root = process.cwd(), { hooks = true } = {}) {
   const sampleSafe = !hasRecipes && distinctRoles &&
     !existsSync(brickPath) && !existsSync(recipePath) && !existsSync(outPath);
   if (sampleSafe) {
-    writeFileSync(brickPath, `---\npiece: footer\nsummary: shared closing line, parameterized by project\n---\n_Generated for **{{project}}** by nbp-forge — edit the recipe/brick, not this file._\n`);
+    writeFileSync(brickPath, `---\npiece: footer\nsummary: shared closing line, parameterized by project\n---\n_Generated for **{{project}}** by nbp-skillforge — edit the recipe/brick, not this file._\n`);
     writeFileSync(recipePath, `---\nname: hello\ndescription: sample skill — replace me\n---\n# hello\n\nThis is a sample skill. Reuse shared bricks with an include directive:\n\n<!-- include: footer | project=my-app -->\n`);
     created.push(rel(brickPath), rel(recipePath));
     build = run({ root, mode: "build" }); // build only the sample we just seeded
@@ -321,7 +321,7 @@ export function init(root = process.cwd(), { hooks = true } = {}) {
   const hook = hooks ? installHooks({ root, onlyRoot: true }) : null;
   const hookNote = !hook ? ""
     : hook.ok ? (hook.already ? "" : `\n  ✔ installed the pre-commit hook (drift-gate + secret scan).`)
-    : `\n  · pre-commit hook not installed (${hook.msg}). Run \`npx nbp-forge install-hooks\` when ready.`;
+    : `\n  · pre-commit hook not installed (${hook.msg}). Run \`npx nbp-skillforge install-hooks\` when ready.`;
 
   // F-14: init's own action (scaffold config/dirs, optionally seed+build a sample) always
   // succeeds by this point — every early-exit guard already ran — so `command.ok` is always
@@ -336,7 +336,7 @@ export function init(root = process.cwd(), { hooks = true } = {}) {
 // ── list (skills → bricks, with ref-count / blast radius) ─────────────────────
 export function list(root = process.cwd()) {
   const P = paths(root);
-  if (!existsSync(P.recipes)) return { ok: false, msg: `no recipes directory: ${P.cfg.recipes} — run \`npx nbp-forge init\` to scaffold a forge project`, skills: [], bricks: [] };
+  if (!existsSync(P.recipes)) return { ok: false, msg: `no recipes directory: ${P.cfg.recipes} — run \`npx nbp-skillforge init\` to scaffold a forge project`, skills: [], bricks: [] };
   const consumers = brickConsumers(root, P.cfg);
   const skills = readdirSync(P.recipes).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md")).sort();
   const perSkill = skills.map((s) => ({ skill: s, bricks: uniq(includesOf(readFileSync(join(P.recipes, s + ".md"), "utf8"))) }));
