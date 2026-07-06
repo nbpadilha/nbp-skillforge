@@ -228,6 +228,16 @@ normalized axes) between each original and its rebuilt output — zero diff requ
 `onboard-report.md` inside the backup dir maps every file → disposition → gate verdict, with
 rollback instructions. Re-running is a clean no-op (everything is then `excluded-*`).
 
+**`--factor` (mechanical factoring, Fase A):** after the verbatim gate passes, byte-identical
+**heading sections** (a heading up to the next heading/EOF, fence-aware, ≥3 lines, containing no
+`{{param}}`) shared by ≥2 skills are extracted as `bricks/onboarded/<slug>-<sha8>.md` (name is
+deterministic: same content → same brick) and each recipe's section is swapped for the include —
+surrounding blank lines stay in the recipe, so the round-trip stays byte-identical. Every touched
+skill is re-gated; a failure **reverts that skill to verbatim** and drops a consumer-less brick.
+Factoring never fails the run — worst case everything stays verbatim, reported as kept.
+Near-identical blocks are deliberately NOT factored (that semantic judgment is the assisted
+Fase B's job, human-approved).
+
 **enforceGenerated auto-enable:** when the run ends 100% migrated (zero skips, zero gate
 failures, no forge-role tool file in the out dir) and `enforceGenerated` was off, it is flipped
 to `true` automatically and announced loudly — from then on a hand-made skill in the out dir

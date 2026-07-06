@@ -14,9 +14,10 @@
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join, basename, dirname, isAbsolute } from "node:path";
+import { createHash } from "node:crypto"; // node builtin — the zero-runtime-deps guarantee holds
 import {
-  loadConfig, run, splitFm, fenceMasker, INCLUDE, GENERATED_BANNER_RE,
-  hasForgeRole, validateConformance, isConformantName, roleOverlapError,
+  loadConfig, run, splitFm, fenceMasker, INCLUDE, PLACEHOLDER_RE, GENERATED_BANNER_RE,
+  hasForgeRole, validateConformance, isConformantName, roleOverlapError, brickConsumers,
 } from "./compose.mjs";
 import { importFile } from "./lifecycle.mjs";
 import { CASE_INSENSITIVE_FS, canonFold, isInside } from "./paths.mjs";
@@ -172,8 +173,166 @@ export function discover(root, cfg, { from } = {}) {
 
 const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-{2,}/g, "-").replace(/^-|-$/g, "").slice(0, 64);
 
+// ── Fase A factoring (--factor): byte-identical blocks only, gate-verified, self-reverting ───
+// Segments a recipe BODY into heading-sections (a heading line up to — not including — the next
+// heading; plus a preamble block before the first heading). Fence-aware: a `# ...` line inside a
+// code fence is content, not a heading. Line-based; returns [{ heading, lines: [start, end) }].
+export function segmentBlocks(body) {
+  const lines = body.split("\n");
+  const isFenced = fenceMasker(body);
+  // Map each line index to its char offset so the fence mask (offset-based) applies per line.
+  const offsets = [0];
+  for (const l of lines) offsets.push(offsets[offsets.length - 1] + l.length + 1);
+  const heads = [];
+  // 0–3 leading spaces: CommonMark's ATX-heading indentation allowance — mirrors FENCE_RE.
+  for (let i = 0; i < lines.length; i++) if (/^ {0,3}#{1,6} /.test(lines[i]) && !isFenced(offsets[i])) heads.push(i);
+  const blocks = [];
+  if (heads.length === 0 || heads[0] > 0) blocks.push({ heading: null, start: 0, end: heads[0] ?? lines.length });
+  for (let h = 0; h < heads.length; h++) blocks.push({ heading: lines[heads[h]], start: heads[h], end: heads[h + 1] ?? lines.length });
+  return { lines, blocks };
+}
+
+// The CORE of a block = its lines minus leading/trailing blank lines. The core (exact bytes,
+// joined by \n) is both the dedup key and the future brick body — compose inlines `b.trim()`,
+// so keeping the surrounding blank lines in the RECIPE (never in the brick) is what makes the
+// factored round-trip byte-identical. No per-line normalization: near-identical is Fase B's job.
+function blockCore(lines, start, end) {
+  let a = start, b = end - 1;
+  while (a <= b && lines[a].trim() === "") a++;
+  while (b >= a && lines[b].trim() === "") b--;
+  return a > b ? null : { coreStart: a, coreEnd: b + 1, text: lines.slice(a, b + 1).join("\n") };
+}
+
+const slugHead = (heading) => {
+  const s = heading ? slugify(heading.replace(/^#{1,6} /, "")) : "";
+  return s || "section";
+};
+
+// factorPass: find byte-identical cores shared by ≥2 skills (≥3 lines, no {{param}} — a literal
+// placeholder inside a BRICK body becomes a required param and breaks the build), write each as
+// bricks/onboarded/<slug>-<sha8>.md, swap each recipe's core LINES for the include directive,
+// rebuild, and gate EVERY affected skill; any gate failure reverts that skill to its verbatim
+// recipe (and drops a this-run brick nobody consumes). Factoring never fails the onboard.
+//
+// Replacement is by SEGMENT COORDINATES, never by text search (dual-review finding, both
+// vendors): an indexOf over the whole body could match the same bytes embedded in ANOTHER
+// section/fence and factor the wrong spot — byte-faithful to the gate, structurally wrong.
+// Segment cores are disjoint line ranges by construction; applying them bottom-up per skill
+// keeps every index valid with no re-scan.
+function factorPass({ root, cfg, imported, backupDir }) {
+  const recipes = new Map(); // skill → { fm, body, verbatim }
+  for (const e of imported) {
+    // These recipes were created by THIS run's importFile — LF/BOM-normalized by construction.
+    const raw = readFileSync(join(root, cfg.recipes, e.skill + ".md"), "utf8");
+    const { fm, body } = splitFm(raw);
+    recipes.set(e.skill, { fm, body, verbatim: raw });
+  }
+
+  // Pass 1 — segment each skill ONCE; group cores by exact text with their line ranges.
+  const groups = new Map(); // core text → { heading, occ: Map(skill → [{coreStart, coreEnd}]) }
+  const skillLines = new Map(); // skill → lines[] (single segmentation, coordinates stay valid)
+  for (const [skill, r] of recipes) {
+    const { lines, blocks } = segmentBlocks(r.body);
+    skillLines.set(skill, lines);
+    for (const blk of blocks) {
+      const core = blockCore(lines, blk.start, blk.end);
+      if (!core) continue;
+      if (core.coreEnd - core.coreStart < 3) continue; // min 3 lines (approved decision 6)
+      PLACEHOLDER_RE.lastIndex = 0;
+      if (PLACEHOLDER_RE.test(core.text)) continue;   // no-factor span (P3)
+      const g = groups.get(core.text) ?? { heading: blk.heading, occ: new Map() };
+      if (!g.occ.has(skill)) g.occ.set(skill, []);
+      g.occ.get(skill).push({ coreStart: core.coreStart, coreEnd: core.coreEnd });
+      groups.set(core.text, g);
+    }
+  }
+
+  // A group factors when ≥2 DISTINCT skills share the core in THIS batch, OR when a
+  // byte-identical brick ALREADY sits at the deterministic path (a later batch matching a
+  // previously-factored section — earlier recipes carry the include, not the raw text, so
+  // cross-batch sharing is only visible through the brick itself).
+  const candidates = [...groups.entries()];
+  if (!candidates.length) return { factored: [], kept: [] };
+
+  // Pass 2 — write bricks. Collision guard (dual-review): a pre-existing file at the computed
+  // path is REUSED when byte-identical (idempotent re-run) and SKIPS the group otherwise (never
+  // clobber a user brick; sha8 is 32 bits — cheap paranoia). Any write error also just skips the
+  // group: factoring degrades, it never throws the run away.
+  const created = [];   // bricks this run WROTE (deletable on no-consumer)
+  const reused = [];    // pre-existing byte-identical bricks (user-owned — reported, never deleted)
+  const replacements = new Map(); // skill → [{coreStart, coreEnd, brickRel}]
+  for (const [text, g] of candidates) {
+    const brickRel = `onboarded/${slugHead(g.heading)}-${createHash("sha256").update(text).digest("hex").slice(0, 8)}`;
+    const brickPath = join(root, cfg.bricks, brickRel + ".md");
+    let wroteThisRun = false;
+    try {
+      if (existsSync(brickPath)) {
+        const cur = readFileSync(brickPath, "utf8");
+        if (cur !== text + "\n") continue; // different content at the same path → skip the group
+        reused.push(brickRel);
+      } else {
+        if (g.occ.size < 2) continue; // singleton with no pre-existing brick → nothing to share
+        mkdirSync(dirname(brickPath), { recursive: true });
+        writeFileSync(brickPath, text + "\n");
+        wroteThisRun = true;
+      }
+    } catch { continue; } // unwritable path (dir squatting the name, perms) → skip the group
+    if (wroteThisRun) created.push(brickRel);
+    for (const [skill, occs] of g.occ) {
+      (replacements.get(skill) ?? replacements.set(skill, []).get(skill)).push(
+        ...occs.map((o) => ({ ...o, brickRel })));
+    }
+  }
+
+  // Pass 3 — apply per skill, bottom-up (ranges are disjoint segments; descending order keeps
+  // every earlier index valid). One write per touched skill.
+  const touched = new Set();
+  for (const [skill, reps] of replacements) {
+    const lines = skillLines.get(skill).slice();
+    for (const rep of reps.sort((a, b) => b.coreStart - a.coreStart)) {
+      lines.splice(rep.coreStart, rep.coreEnd - rep.coreStart, `<!-- include: ${rep.brickRel} -->`);
+    }
+    const r = recipes.get(skill);
+    r.body = lines.join("\n");
+    writeFileSync(join(root, cfg.recipes, skill + ".md"), r.fm === null ? r.body : `---\n${r.fm}${r.fm ? "\n" : ""}---\n${r.body}`);
+    touched.add(skill);
+  }
+  if (!touched.size) return { factored: [], kept: [] };
+
+  // Rebuild + gate every touched skill; revert the ones that fail (never fail the run).
+  // A build-level failure reverts EVERY touched skill — deliberately global: a broken factored
+  // state must never survive, and the verbatim baseline is proven good.
+  const build = run({ root, mode: "build" });
+  const kept = [];
+  const judge = (skill, srcFile) => {
+    const original = new TextDecoder("utf8").decode(readFileSync(join(backupDir, basename(srcFile))));
+    const rebuilt = readFileSync(join(root, cfg.outs[0], skill + ".md"), "utf8");
+    return normalizeForGate(original.replace(/^﻿/, "")) === normalizeForGate(rebuilt);
+  };
+  let needRebuild = !build.ok;
+  for (const e of imported.filter((x) => touched.has(x.skill))) {
+    if (build.ok && judge(e.skill, e.file)) continue;
+    writeFileSync(join(root, cfg.recipes, e.skill + ".md"), recipes.get(e.skill).verbatim); // revert
+    kept.push(e.skill);
+    needRebuild = true;
+  }
+  if (needRebuild) run({ root, mode: "build" }); // regenerate the reverted outputs
+  // Drop only bricks THIS RUN created that ended up with no consumer (a reused pre-existing
+  // brick is the user's — never deleted here even if unconsumed).
+  const consumers = brickConsumers(root, cfg);
+  const factored = [];
+  for (const brick of created) {
+    if (consumers[brick]?.size) factored.push({ brick, usedBy: [...consumers[brick]].sort() });
+    else rmSync(join(root, cfg.bricks, brick + ".md"), { force: true });
+  }
+  for (const brick of reused) {
+    if (consumers[brick]?.size) factored.push({ brick, usedBy: [...consumers[brick]].sort(), reused: true });
+  }
+  return { factored, kept };
+}
+
 // ── report (P8): decision telemetry, inside the run's backup dir ─────────────────────────────
-function writeReport(backupDir, { discRel, entries, gate, applied, enforce }) {
+function writeReport(backupDir, { discRel, entries, gate, applied, enforce, factoring }) {
   const line = (e) => `| ${e.file.replace(/\\/g, "/")} | ${e.status} | ${e.reason ?? ""}${e.proposal ? ` — ${e.proposal}` : ""} |`;
   const gateLine = (g) => `| ${g.skill} | ${g.pass ? "✔ fiel (diff normalizado zero)" : "✗ GATE FAILED"} |`;
   const md = [
@@ -191,6 +350,15 @@ function writeReport(backupDir, { discRel, entries, gate, applied, enforce }) {
     ...entries.map(line),
     ``,
     ...(gate.length ? [`## fidelity gate (normalized round-trip diff vs the original)`, ``, `| skill | verdict |`, `|---|---|`, ...gate.map(gateLine), ``] : []),
+    ...(factoring ? [
+      `## mechanical factoring (--factor: byte-identical blocks only)`,
+      ``,
+      ...(factoring.factored.length
+        ? [`| brick | used by |`, `|---|---|`, ...factoring.factored.map((f) => `| ${f.brick} | ${f.usedBy.join(", ")} |`)]
+        : [`No byte-identical shared block (≥3 lines, no {{param}}) was found across two or more skills.`]),
+      ...(factoring.kept.length ? [``, `Kept **verbatim** (factored round-trip failed its gate and was reverted): ${factoring.kept.join(", ")}.`] : []),
+      ``,
+    ] : []),
     ...(enforce ? [`## enforceGenerated`, ``, enforce, ``] : []),
   ].join("\n");
   writeFileSync(join(backupDir, "onboard-report.md"), md);
@@ -225,7 +393,7 @@ export function onboard({ root = process.cwd(), ts, apply = false, from, factor 
   if (!apply) {
     return {
       ok: true, applied: false, root: discRel, entries,
-      msg: summary(` Dry-run: nothing written. Re-run with --apply to migrate (originals are snapshotted first).${from ? "" : ` Scanning the configured out dir — use --from <dir> if your skills live elsewhere.`}`),
+      msg: summary(` Dry-run: nothing written. Re-run with --apply to migrate (originals are snapshotted first).${factor ? " (--factor takes effect together with --apply.)" : ""}${from ? "" : ` Scanning the configured out dir — use --from <dir> if your skills live elsewhere.`}`),
     };
   }
 
@@ -280,6 +448,14 @@ export function onboard({ root = process.cwd(), ts, apply = false, from, factor 
   });
   const gateFails = gate.filter((g) => !g.pass);
 
+  // Fase A factoring (opt-in, decision 6): only after the VERBATIM gate passed for everyone —
+  // factoring must start from a proven-faithful baseline. It gates and reverts per skill and can
+  // never fail the run (worst case: everything stays verbatim, reported as kept).
+  let factoring = null;
+  if (factor && !gateFails.length) {
+    factoring = factorPass({ root, cfg, imported, backupDir });
+  }
+
   // P9 (maintainer decision §8b.5): 100% migrated → enforceGenerated flips ON automatically,
   // announced loudly. ANY skip, gate failure, or forge-role file still in the out dir (it would
   // become an instant orphan) blocks the auto-enable — then we only suggest.
@@ -308,14 +484,17 @@ export function onboard({ root = process.cwd(), ts, apply = false, from, factor 
     enforceNote = `enforceGenerated stays OFF (${why}). Once everything is migrated, enable it in forge.config.json so hand-made skills can't drift in unnoticed.`;
   }
 
-  writeReport(backupDir, { discRel, entries, gate, applied: true, enforce: enforceNote });
+  writeReport(backupDir, { discRel, entries, gate, applied: true, enforce: enforceNote, factoring });
 
   const ok = gateFails.length === 0;
+  const factorNote = factoring
+    ? ` Factoring: ${factoring.factored.length} shared brick(s) extracted${factoring.kept.length ? `, ${factoring.kept.length} kept verbatim (gate)` : ""}.`
+    : "";
   return {
-    ok, applied: true, root: discRel, entries, backupDir, gate, enforced,
+    ok, applied: true, root: discRel, entries, backupDir, gate, enforced, factoring,
     warnings: build.warnings,
     msg: ok
-      ? summary(` ${imported.length} migrated, fidelity gate PASSED for all (normalized diff zero). Backup + report: ${backupDir}.${enforced ? " enforceGenerated: ON (100% migrated)." : ""}`)
+      ? summary(` ${imported.length} migrated, fidelity gate PASSED for all (normalized diff zero).${factorNote} Backup + report: ${backupDir}.${enforced ? " enforceGenerated: ON (100% migrated)." : ""}`)
       : summary(` GATE FAILED for ${gateFails.map((g) => g.skill).join(", ")} — originals are safe in ${backupDir}; see the report.`),
   };
 }
