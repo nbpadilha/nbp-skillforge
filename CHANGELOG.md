@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-06
+
+> The **migration release**: the package is now `nbp-skillforge`, one recipe set can build to
+> N agent platforms, and an existing skill library migrates into the forge with one command —
+> snapshot-protected, fidelity-gated, with mechanical factoring and an assisted (agent) step for
+> the divergent parts. Every load-bearing change in this release went through dual cross-vendor
+> adversarial review (codex gpt-5.5 + agy), with every confirmed flag fixed and pinned by tests.
+
 ### Added
 - **F-31 Fase 5 — assisted onboarding skill:** `forge onboard --install-skill` materializes the
   `forge-onboard` agent skill (marked `forge-role: nbp-skillforge/onboard`; idempotent; never

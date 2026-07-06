@@ -92,6 +92,7 @@
       <tr><td>list</td><td>show each skill → the bricks it includes, and each brick's ref-count + consumers (blast radius before you edit one)</td></tr>
       <tr><td>new</td><td>scaffold a new recipe (optional <code>--description</code>), then build</td></tr>
       <tr><td>import</td><td>onboard an existing SKILL.md/command file as a recipe, deterministically — no LLM involved</td></tr>
+      <tr><td>onboard</td><td>migrate a whole existing skill library: dry-run report by default; <code>--apply</code> snapshots every original, imports, builds and proves fidelity per skill; <code>--factor</code> extracts byte-identical shared sections as bricks; <code>--install-skill</code> materializes the assisted (agent) step for the divergent parts</td></tr>
       <tr><td>rename</td><td>rename a skill (regenerate, drop the stale output)</td></tr>
       <tr><td>remove</td><td>soft-delete the recipe + only the bricks <b>that skill owns</b>; shared bricks stay (you're told which and why)</td></tr>
       <tr><td>restore</td><td>bring a removed skill (and its bricks) back from <code>_archive/</code></td></tr>

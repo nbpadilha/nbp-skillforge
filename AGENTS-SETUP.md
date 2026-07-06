@@ -97,12 +97,18 @@ existing hook). In a git repo, step 6 below is already done for you.
 ### 4 — Author or onboard skills
 Two paths; use either or both.
 
-**4a — Onboard existing skills (deterministic, no LLM guesswork):** for each skill file you already
-have, run:
+**4a — Onboard existing skills (deterministic, no LLM guesswork):** migrate the whole library in
+one command:
 ```bash
-forge import path/to/existing-skill.md      # writes a recipe verbatim; strips a prior GENERATED banner
+forge onboard                    # dry-run: classifies every skill in the out dir, writes NOTHING
+forge onboard --apply --factor   # snapshots originals → imports verbatim → builds → per-skill
+                                 # fidelity gate; --factor extracts byte-identical shared sections
+                                 # as bricks (gate-verified, self-reverting)
 ```
-Then `forge build` (import does not auto-build).
+**Verify:** the run reports `fidelity gate PASSED for all`; `forge check` exits 0; the
+`_onboard-backup-*/onboard-report.md` lists EVERY file with a disposition (skips include a
+reason + proposal — resolve them with the human, never silently). One-off files can still be
+migrated individually with `forge import <file>` + `forge build`.
 
 **4b — Factor out duplication into bricks:** find a step copy-pasted across several skills (a run-folder
 setup, a closing checklist, a result contract). Extract it once, parameterize the variation:
