@@ -1002,3 +1002,27 @@ test("rename: refuses when the target already exists", () => {
     assert.match(r.msg, /already exists/);
   } finally { cleanup(root); }
 });
+
+// ── F-31 Fase 1: import warns (never blocks) on a forge-role-marked source ───────────────────
+test("import: a source carrying the forge-role marker imports WITH a warning (not blocked)", () => {
+  const root = makeRoot({});
+  const src = join(root, "external", "forge-onboard.md");
+  write(src, "---\nname: forge-onboard\ndescription: Package tooling.\nforge-role: nbp-skillforge/onboard\n---\n# forge-onboard\n\nbody\n");
+  try {
+    const r = importFile(src, { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(has(recipe(root, "forge-onboard")), true, "import still happens (warn, not block)");
+    assert.ok(r.warnings?.some((w) => /forge-role marker/.test(w)), "warning emitted");
+  } finally { cleanup(root); }
+});
+
+test("import: a forge-role-shaped line in the BODY only (not fm) does NOT warn", () => {
+  const root = makeRoot({});
+  const src = join(root, "external", "doc-skill.md");
+  write(src, "---\nname: doc-skill\ndescription: Documents the marker.\n---\n# doc-skill\n\nExample:\n\nforge-role: nbp-skillforge/onboard\n");
+  try {
+    const r = importFile(src, { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.warnings?.length ?? 0, 0, "no warning for a body-only mention");
+  } finally { cleanup(root); }
+});

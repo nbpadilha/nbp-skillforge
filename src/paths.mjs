@@ -21,7 +21,11 @@
 import { realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 
-const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
+// Exported (F-31 Fase 1): the onboarding layer folds LOGICAL names (recipe/skill names, not
+// absolute paths — canonFold only serves the latter) when detecting collisions on a
+// case-insensitive filesystem. If F-30 ever replaces this constant with a per-root FS probe,
+// onboarding is the one external call site to migrate with it.
+export const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
 
 export function canon(p) {
   try { return realpathSync.native(resolve(p)); } catch { return resolve(p); }

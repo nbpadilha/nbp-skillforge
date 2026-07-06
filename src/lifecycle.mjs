@@ -4,7 +4,7 @@
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync, rmdirSync, renameSync, realpathSync, statSync } from "node:fs";
 import { join, dirname, basename, relative, resolve, sep } from "node:path";
-import { loadConfig, run, includesOf, brickConsumers, splitFm, isConformantName, GENERATED_BANNER_RE } from "./compose.mjs";
+import { loadConfig, run, includesOf, brickConsumers, splitFm, isConformantName, GENERATED_BANNER_RE, hasForgeRole } from "./compose.mjs";
 import { installHooks } from "./hooks.mjs";
 import { canonFold, isInside } from "./paths.mjs";
 
@@ -126,6 +126,7 @@ export function importFile(srcPath, { root = process.cwd(), name, force = false 
   const { fm, body } = splitFm(raw);
   const cleanBody = body.replace(GENERATED_BANNER_RE, "");
 
+
   // Extract the frontmatter's OWN `name:` value independently of the precedence chain below (not
   // gated on `!skill`) — F-09 needs it regardless of which precedence branch wins, to detect when
   // the final skill name diverges from what the source file's own fm declares.
@@ -137,6 +138,15 @@ export function importFile(srcPath, { root = process.cwd(), name, force = false 
 
   const bad = unsafeName(skill); // shared guard: blocks traversal / reserved chars / device names
   if (bad) return { ok: false, msg: bad };
+
+  // F-31: a source carrying the forge-role marker is nbp-skillforge's OWN tooling (e.g. the
+  // ephemeral forge-onboard skill) — importing it turns a package tool into a user recipe, which
+  // is almost never intended (and would leak the marker into the generated output, excluding it
+  // from future onboarding scans forever). WARN, don't block: the user may genuinely want it, and
+  // a hard refusal here would be a policy call the engine has no business making. Emitted after
+  // name resolution so the message carries the [skill] tag, same shape as build's warnings.
+  const warnings = [];
+  if (hasForgeRole(fm)) warnings.push(`warning: [${skill}] source carries the forge-role marker (nbp-skillforge tooling) — importing it turns the tool into a user recipe; remove the marker from the recipe if this was intended`);
 
   const dest = join(P.recipes, skill + ".md");
   if (existsSync(dest)) {
@@ -159,7 +169,9 @@ export function importFile(srcPath, { root = process.cwd(), name, force = false 
   // Deliberately does NOT auto-build: an imported skill may not build yet (missing brick or a
   // non-conformant name), so building here could fail after a --force overwrite and leave a
   // clobbered, broken recipe. Creating the recipe is atomic; the user runs `forge build` next.
-  return { ok: true, skill, msg: `imported "${skill}" → ${P.cfg.recipes}/${skill}.md. Run \`forge build\` to generate.` };
+  // `warnings` rides the same non-blocking channel build/check use — bin/cli.mjs's finish()
+  // already prints r.warnings unconditionally, so no CLI change is needed for the F-31 warn.
+  return { ok: true, skill, msg: `imported "${skill}" → ${P.cfg.recipes}/${skill}.md. Run \`forge build\` to generate.`, warnings };
 }
 
 // ── remove (soft by default) ─────────────────────────────────────────────────
