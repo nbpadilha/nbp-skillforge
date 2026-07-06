@@ -31,7 +31,7 @@ The reason it's safe to try: **you're never locked in, in either direction.**
 
 > **Migrating a whole library? One command.** `forge onboard` reads your existing skills in one pass and shows exactly what it would do — nothing is written until you say `--apply`. Then it snapshots every original (byte-faithful backup + rollback instructions), migrates them, and a **fidelity gate** proves each migrated skill rebuilds identical to its original. Add `--factor` and the sections that are **byte-identical across skills become shared bricks automatically** — still gate-verified, still reverting to verbatim if fidelity would break. Skills it can't migrate safely are skipped and reported, never touched. When 100% of your library is governed, strict mode turns on by itself.
 >
-> *On the roadmap:* the assisted step for the similar-but-divergent parts — an agent proposes the unified version, you approve group by group.
+> And for the parts that are similar-but-divergent across skills, there's the **assisted step**: `forge onboard --install-skill` drops a `forge-onboard` agent skill into your commands — run it in your agent and it proposes a unified version per group, **you approve group by group**, and the engine verifies every applied group by execution. The skill is package tooling (marked, ignored by scans, removed automatically when strict mode turns on) — its harness-neutral protocol ships in the package as `ONBOARD-SPEC.md`, so any capable agent can run it.
 
 ---
 

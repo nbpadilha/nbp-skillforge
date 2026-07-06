@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { run } from "../src/compose.mjs";
 import { create, remove, restore, gc, rename, init, list, importFile } from "../src/lifecycle.mjs";
-import { onboard } from "../src/onboard.mjs";
+import { onboard, installSkill } from "../src/onboard.mjs";
 import { installHooks } from "../src/hooks.mjs";
 
 const HELP = {
@@ -15,7 +15,7 @@ const HELP = {
   list:    "list [--json] [--root <dir>]                  show skills → bricks and per-brick ref-count (blast radius)",
   new:     "new <skill> [--description <text>] [--root <dir>]  scaffold a new recipe, then build",
   import:  "import <file> [--name <n>] [--force] [--root <dir>]  onboard an existing SKILL.md/command as a recipe",
-  onboard: "onboard [--apply] [--factor] [--from <dir>] [--json] [--root <dir>]  migrate the existing skills of the out dir into recipes (dry-run by default; --apply snapshots, imports, builds and gates; --factor also extracts byte-identical shared blocks as bricks)",
+  onboard: "onboard [--apply] [--factor] [--from <dir>] [--install-skill] [--json] [--root <dir>]  migrate the existing skills of the out dir into recipes (dry-run by default; --apply snapshots, imports, builds and gates; --factor also extracts byte-identical shared blocks as bricks; --install-skill materializes the forge-onboard agent skill for the assisted Fase B)",
   rename:  "rename <old> <new> [--root <dir>]    rename a skill (regenerate, drop the stale output)",
   remove:  "remove <skill> [--hard] [--root <dir>]   soft-delete (→ _archive) the recipe + exclusive bricks",
   restore: "restore <skill> [--root <dir>]       bring a removed skill (and its bricks) back",
@@ -39,7 +39,7 @@ const die = (msg) => { console.error("✗ " + msg); process.exit(2); };
 // flag or a bad config (both --json-aware, see jsonErr), this is a malformed-invocation typo, so
 // failing fast to stderr like any CLI is acceptable; not worth a two-pass arg parser to JSON-ify.
 const value = (a, i) => { const v = argv[i]; if (v === undefined || v.startsWith("-")) die(`${a} requires a value`); return v; };
-let root = process.cwd(), hard = false, apply = false, force = false, name, description, from, factor = false, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false, wantJson = false, unknownFlag = null;
+let root = process.cwd(), hard = false, apply = false, force = false, name, description, from, factor = false, installSkillFlag = false, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false, wantJson = false, unknownFlag = null;
 const pos = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -52,6 +52,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--force") force = true;
   else if (a === "--dry-run") dryRun = true;
   else if (a === "--factor") factor = true;
+  else if (a === "--install-skill") installSkillFlag = true;
   else if (a === "--no-hooks") noHooks = true;
   else if (a === "--json") wantJson = true;
   else if (a === "--help" || a === "-h") wantHelp = true;
@@ -160,6 +161,7 @@ switch (cmd) {
     break;
   }
   case "onboard": {
+    if (installSkillFlag) { finish(installSkill({ root })); }
     // The run timestamp is minted HERE (the one non-deterministic input, injected at the edge —
     // src/onboard.mjs itself never reads the clock, so its behavior is fully input-determined).
     const ts = new Date().toISOString().replace(/[:.]/g, "-").replace(/Z$/, "");
