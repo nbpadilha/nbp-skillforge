@@ -178,6 +178,9 @@ accepted but has no effect on their output.
   chars). When the resolved name differs from the source's own frontmatter `name:`, that field is
   rewritten to match, so the recipe never declares a name that disagrees with its own identity. It
   does **not** auto-build (an external skill may not build yet); run `forge build` next.
+  A source whose frontmatter carries the `forge-role: nbp-skillforge/onboard` marker (nbp-skillforge's
+  own tooling, e.g. the ephemeral onboarding skill) imports with a non-blocking **warning** —
+  importing it turns a package tool into a user recipe, which is rarely intended.
 - `rename <old> <new>` moves the recipe, regenerates the output under the new name, and removes the
   stale old one. When the recipe has frontmatter with a `name:` field, that field is ALWAYS
   rewritten to `<new>` — even if it never matched the old filename — scoped to the frontmatter

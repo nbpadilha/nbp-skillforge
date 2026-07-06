@@ -5,7 +5,7 @@ import { join, dirname } from "node:path";
 import { sep } from "node:path";
 import { symlinkSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { run, loadConfig, includesOf, splitFm, relFromBase } from "../src/compose.mjs";
+import { run, loadConfig, includesOf, splitFm, relFromBase, hasForgeRole, FORGE_ROLE_VALUE } from "../src/compose.mjs";
 import { gc } from "../src/lifecycle.mjs";
 import { makeRoot, read, readRaw, has, outFile, recipe, brick, cleanup, write } from "./helpers.mjs";
 
@@ -1025,4 +1025,39 @@ test("build: a {{param}} key with a non-[\\w-] char (a dot) is left VERBATIM, no
     // matched it to mark it consumed — this is the one observable signal an author gets.
     assert.ok(r.warnings.some((w) => w.includes("unused param(s): my.key")));
   } finally { cleanup(root); }
+});
+
+// ── F-31 Fase 1: forge-role marker detection (fm-scoped by contract) ─────────────────────────
+test("hasForgeRole: detects the namespaced value in a split fm block; ignores other namespaces", () => {
+  assert.equal(hasForgeRole(`name: forge-onboard\nforge-role: ${FORGE_ROLE_VALUE}`), true);
+  assert.equal(hasForgeRole(`forge-role: "${FORGE_ROLE_VALUE}"`), true, "quoted value accepted");
+  assert.equal(hasForgeRole(`forge-role: '${FORGE_ROLE_VALUE}'`), true, "single-quoted value accepted");
+  assert.equal(hasForgeRole("forge-role: someone-else/tool"), false, "foreign namespace ignored");
+  assert.equal(hasForgeRole(`x-forge-role: ${FORGE_ROLE_VALUE}`), false, "line-anchored: prefixed key ignored");
+  assert.equal(hasForgeRole(""), false, "empty fm block");
+  assert.equal(hasForgeRole(null), false, "no fm at all (splitFm returns null)");
+});
+
+test("hasForgeRole: a forge-role-shaped line in a BODY never reaches it via splitFm", () => {
+  // The contract is fm-scoped: callers pass splitFm(...).fm. A body that merely documents the
+  // marker (even outside a fence) is structurally out of reach — prove the composition.
+  const txt = `---\nname: doc\ndescription: documents the marker.\n---\nExample marker:\n\nforge-role: ${FORGE_ROLE_VALUE}\n`;
+  const { fm } = splitFm(txt);
+  assert.equal(hasForgeRole(fm), false, "marker in body only → fm block clean → no detection");
+});
+
+test("hasForgeRole: mismatched quotes are rejected (backreference); CR-tolerant", () => {
+  assert.equal(hasForgeRole(`forge-role: "${FORGE_ROLE_VALUE}`), false, "opening quote without closing rejected");
+  assert.equal(hasForgeRole(`forge-role: ${FORGE_ROLE_VALUE}"`), false, "closing quote without opening rejected");
+  assert.equal(hasForgeRole(`forge-role: "${FORGE_ROLE_VALUE}'`), false, "mixed quotes rejected");
+  assert.equal(hasForgeRole(`forge-role: ${FORGE_ROLE_VALUE}\r`), true, "stray CR (un-normalized CRLF split) tolerated");
+});
+
+// ── F-31: the exported global INCLUDE regex must never let a consumer's stray .test()/.exec()
+// corrupt ref-counting — matchAll clones the regex but INHERITS a dirty lastIndex ─────────────
+test("includesOf: immune to a dirty lastIndex on the exported INCLUDE regex", async () => {
+  const { INCLUDE } = await import("../src/compose.mjs");
+  const text = "---\nname: x\n---\n<!-- include: first -->\nmid\n<!-- include: second -->\n";
+  INCLUDE.lastIndex = 30; // simulate an external consumer that ran .exec()/.test() and stopped midway
+  assert.deepEqual(includesOf(text), ["first", "second"], "ref-count must see ALL includes despite dirty state");
 });

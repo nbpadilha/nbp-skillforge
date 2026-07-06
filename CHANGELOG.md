@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **F-31 Fase 1 (onboarding foundation):** engine primitives exported for the upcoming assisted
+  onboarding — `fenceMasker`, `validateConformance`, `INCLUDE`, `PLACEHOLDER_RE` (single source of
+  truth for the `{{param}}` charset, now also used by the engine's own substitution),
+  `CASE_INSENSITIVE_FS` — plus the `forge-role: nbp-skillforge/onboard` frontmatter marker
+  (`FORGE_ROLE_VALUE`/`hasForgeRole`) that stamps a file as package tooling. `forge import` of a
+  marker-carrying source now emits a non-blocking warning. Zero behavior change to `build`/`check`.
+- Hardening (found in adversarial review, verified by execution): `includesOf` and the
+  nested-include gate defensively reset the exported global `INCLUDE` regex's `lastIndex` — a
+  consumer's stray `.test()`/`.exec()` could otherwise silently drop includes from ref-counting
+  (gc/remove could then archive an in-use brick). `hasForgeRole` rejects mismatched quotes
+  (backreference) and tolerates a stray CR.
+
 ### Changed
 - **Package renamed: `nbp-forge` → `nbp-skillforge`** (npm name, `bin`, repository URLs, docs).
   The short `forge` verb and the `.claude/forge/` role dirs are **unchanged** — only the package
