@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { run } from "../src/compose.mjs";
 import { create, remove, restore, gc, rename, init, list, importFile } from "../src/lifecycle.mjs";
+import { onboard } from "../src/onboard.mjs";
 import { installHooks } from "../src/hooks.mjs";
 
 const HELP = {
@@ -14,6 +15,7 @@ const HELP = {
   list:    "list [--json] [--root <dir>]                  show skills → bricks and per-brick ref-count (blast radius)",
   new:     "new <skill> [--description <text>] [--root <dir>]  scaffold a new recipe, then build",
   import:  "import <file> [--name <n>] [--force] [--root <dir>]  onboard an existing SKILL.md/command as a recipe",
+  onboard: "onboard [--apply] [--from <dir>] [--json] [--root <dir>]  migrate the existing skills of the out dir into recipes (dry-run by default; --apply snapshots the originals, imports, builds and gates)",
   rename:  "rename <old> <new> [--root <dir>]    rename a skill (regenerate, drop the stale output)",
   remove:  "remove <skill> [--hard] [--root <dir>]   soft-delete (→ _archive) the recipe + exclusive bricks",
   restore: "restore <skill> [--root <dir>]       bring a removed skill (and its bricks) back",
@@ -25,7 +27,7 @@ function usage(cmd) {
   if (cmd && HELP[cmd]) { console.log("nbp-skillforge " + HELP[cmd]); return; }
   console.log("nbp-skillforge — compose portable agent skills from reusable bricks, with a drift-gate.\n");
   console.log("usage: nbp-skillforge <command> [options]   (docs/tables abbreviate this as `forge`)\n");
-  for (const k of ["build", "check", "init", "list", "new", "import", "rename", "remove", "restore", "gc", "install-hooks", "help"]) console.log("  " + HELP[k]);
+  for (const k of ["build", "check", "init", "list", "new", "import", "onboard", "rename", "remove", "restore", "gc", "install-hooks", "help"]) console.log("  " + HELP[k]);
   console.log("\nPaths/options come from forge.config.json at the root (see SPEC.md).");
   console.log("--json (build/check/list/gc only): print ONLY the machine-readable result (JSON.stringify(result, null, 2)) — no decorated lines. Exit code unchanged. See README's \"JSON output\" section for the shape.");
 }
@@ -37,11 +39,12 @@ const die = (msg) => { console.error("✗ " + msg); process.exit(2); };
 // flag or a bad config (both --json-aware, see jsonErr), this is a malformed-invocation typo, so
 // failing fast to stderr like any CLI is acceptable; not worth a two-pass arg parser to JSON-ify.
 const value = (a, i) => { const v = argv[i]; if (v === undefined || v.startsWith("-")) die(`${a} requires a value`); return v; };
-let root = process.cwd(), hard = false, apply = false, force = false, name, description, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false, wantJson = false, unknownFlag = null;
+let root = process.cwd(), hard = false, apply = false, force = false, name, description, from, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false, wantJson = false, unknownFlag = null;
 const pos = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
   if (a === "--root") root = resolve(value(a, ++i));
+  else if (a === "--from") from = value(a, ++i);
   else if (a === "--name") name = value(a, ++i);
   else if (a === "--description") description = value(a, ++i);
   else if (a === "--hard") hard = true;
@@ -69,7 +72,7 @@ if (wantVersion) {
 }
 if (wantHelp) { usage(pos[0]); process.exit(0); }
 if (unknownFlag) { // only now — --help/--version already won
-  if (wantJson && ["build", "check", "list", "gc"].includes(cmd)) jsonErr(`unknown option: ${unknownFlag}`, 2);
+  if (wantJson && ["build", "check", "list", "gc", "onboard"].includes(cmd)) jsonErr(`unknown option: ${unknownFlag}`, 2);
   die(`unknown option: ${unknownFlag}`);
 }
 
@@ -155,6 +158,19 @@ switch (cmd) {
     finish(r);
     break;
   }
+  case "onboard": {
+    // The run timestamp is minted HERE (the one non-deterministic input, injected at the edge —
+    // src/onboard.mjs itself never reads the clock, so its behavior is fully input-determined).
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").replace(/Z$/, "");
+    const r = onboard({ root, ts, apply, from });
+    if (wantJson) finishJson(r);
+    if (r.entries) {
+      const sym = { eligible: "+", "excluded-generated": "·", "excluded-forge-role": "·", "excluded-has-recipe": "·" };
+      for (const e of r.entries) console.log(`  ${sym[e.status] ?? "!"} ${e.file.replace(/\\/g, "/")}  [${e.status}]${e.reason ? " — " + e.reason : ""}${e.proposal ? " → " + e.proposal : ""}`);
+    }
+    finish(r);
+    break;
+  }
   case "install-hooks": finish(installHooks({ root, force })); break;
   case "rename":  if (!pos[1] || !pos[2]) finish({ ok: false, msg: `usage: ${HELP.rename}` }); finish(rename(pos[1], pos[2], { root })); break;
   case "help":    usage(pos[1]); process.exit(0);
@@ -163,7 +179,7 @@ switch (cmd) {
 }
 } catch (e) {
   if (!e?.userFacing) throw e; // unexpected/programming error → preserve the stack trace, crash loudly
-  if (wantJson && ["build", "check", "list", "gc"].includes(cmd)) jsonErr(e.message, 1); // parseable error for --json consumers
+  if (wantJson && ["build", "check", "list", "gc", "onboard"].includes(cmd)) jsonErr(e.message, 1); // parseable error for --json consumers
   console.error("✗ " + e.message);
   process.exit(1);
 }

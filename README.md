@@ -29,7 +29,9 @@ The reason it's safe to try: **you're never locked in, in either direction.**
 
 > Install is easy. Uninstall is easier — your skills were never hostages.
 
-> **On the roadmap:** an assisted onboarder that reads your *entire* existing skill library in one pass, factors the shared scope into bricks for you, and hands you recipes to approve — turning a manual migration into a guided one. Today you migrate skill-by-skill with `forge import` (below); the safety guarantees above already hold.
+> **Migrating a whole library? One command.** `forge onboard` reads your existing skills in one pass and shows exactly what it would do — nothing is written until you say `--apply`. Then it snapshots every original (byte-faithful backup + rollback instructions), migrates them, and a **fidelity gate** proves each migrated skill rebuilds identical to its original. Skills it can't migrate safely are skipped and reported, never touched. When 100% of your library is governed, strict mode turns on by itself.
+>
+> *On the roadmap:* the assisted step that also factors the shared scope across skills into bricks for you (the identical parts automatically; the similar-but-divergent parts proposed for your approval, group by group).
 
 ---
 
@@ -81,7 +83,8 @@ Fix it the right way — edit the **brick**, run `build`, and **both** skills up
 npx nbp-skillforge init          # scaffold config + dirs + a sample skill, install the pre-commit hook
 npx nbp-skillforge build         # generate skills from recipes + bricks
 npx nbp-skillforge check         # drift-gate: exit 1 if any output diverged (for CI / pre-commit)
-npx nbp-skillforge import <file> # onboard an existing SKILL.md/command as a recipe, then `build`
+npx nbp-skillforge onboard       # migrate an existing skill library: dry-run report; --apply executes
+npx nbp-skillforge import <file> # onboard a single existing SKILL.md/command as a recipe, then `build`
 npx nbp-skillforge help          # every command; `help <command>` for one
 # prefer a global install? npm i -g nbp-skillforge  →  then just `nbp-skillforge build`
 ```

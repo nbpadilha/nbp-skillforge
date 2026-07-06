@@ -203,6 +203,36 @@ accepted but has no effect on their output.
   error bullets `build`/`check` print are shown — it never exits 1 with an unexplained success-shaped
   message.
 
+## Onboarding (`forge onboard`)
+Migrates an existing skill library into the forge. **Dry-run by default** — running it bare only
+prints a classification of every file in the scanned root (nothing is written); `--apply` executes.
+The scanned root is the configured out dir (`cfg.outs[0]`), announced in the output; `--from <dir>`
+scans another folder. `--json` supported.
+
+**Discovery & exclusion (all deterministic, no LLM):** first-level `*.md` files of the scanned
+root. Every file gets an explicit disposition — nothing is silently dropped:
+- `eligible` — user-authored, will be onboarded.
+- `excluded-generated` — carries a GENERATED banner (old `nbp-forge` or new `nbp-skillforge`
+  signature; detected AFTER frontmatter split). `excluded-has-recipe` — already governed.
+  `excluded-forge-role` — nbp-skillforge's own tooling (frontmatter marker).
+- `skip-nested` (subfolders are v1 out of scope) · `skip-non-utf8` · `skip-include-like` (a
+  directive outside a fence would be expanded by the engine — no safe verbatim path) ·
+  `skip-nonconformant` (a rename is PROPOSED, never applied — renaming changes the invocation
+  name) · `skip-collision` (case-fold aware). Skipped originals are never touched.
+
+**`--apply` pipeline:** (1) **snapshot** every eligible original, byte-faithful (CRLF/BOM
+preserved), to `_onboard-backup-<ts>/` beside the archive dir — the first build overwrites the
+originals in place, so this is the rollback; (2) verbatim `import` per skill; (3) ONE full build;
+(4) **fidelity gate**: normalized round-trip diff (banner/CRLF/EOF-whitespace are the only
+normalized axes) between each original and its rebuilt output — zero diff required; (5)
+`onboard-report.md` inside the backup dir maps every file → disposition → gate verdict, with
+rollback instructions. Re-running is a clean no-op (everything is then `excluded-*`).
+
+**enforceGenerated auto-enable:** when the run ends 100% migrated (zero skips, zero gate
+failures, no forge-role tool file in the out dir) and `enforceGenerated` was off, it is flipped
+to `true` automatically and announced loudly — from then on a hand-made skill in the out dir
+fails `check`. Any skip downgrades this to a printed suggestion.
+
 ## Safety & boundaries
 - Skill names (`new`/`rename`/`remove`/`restore`/`import`) and include paths must be a single
   filesystem-safe segment inside their root — `..`, separators, absolute paths, reserved device

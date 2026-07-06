@@ -51,8 +51,10 @@ Run `npx nbp-skillforge check` on staged changes (or in CI). It fails if any gen
 hand-edited, diverges from its recipe, or (with `enforceGenerated`) has no recipe.
 
 ## Adopting & rolling back — both are cheap
-Adoption is **incremental**: onboard one skill at a time (`forge import <file>`, then `build`).
-A skill without a recipe is **left untouched** — there is no flag day, and you stop whenever you like.
+Adoption is **incremental**: migrate the whole library with `forge onboard` (dry-run report first;
+`--apply` snapshots every original, imports, builds and proves fidelity — see SPEC.md's Onboarding
+section), or one skill at a time (`forge import <file>`, then `build`). A skill without a recipe is
+**left untouched** — there is no flag day, and you stop whenever you like.
 
 Rollback is **cheaper still — you do nothing to your skills**. Every file the forge builds is a
 complete, standalone `SKILL.md`/command living in your normal `out` path (`.claude/commands/` by
