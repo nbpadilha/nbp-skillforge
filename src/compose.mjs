@@ -179,7 +179,7 @@ export function includesOf(text) {
   // so counting it here would falsely protect a brick from gc / mark it as a false consumer.
   // CRLF is normalized first — splitFm requires a literal `\n` between the `---` fences, so a
   // CRLF-checked-out recipe would otherwise fail to split and this fix would silently no-op.
-  const body = splitFm(text.replace(/\r\n/g, "\n")).body;
+  const body = splitFm(text.replace(/\r\n?/g, "\n")).body;
   // F-03: a directive documented inside a fenced code block is not "really" an include —
   // matches compose()'s expansion mask exactly, or gc could archive a brick a live recipe still
   // (verbatim, unexpanded) documents an example for.
@@ -269,7 +269,7 @@ function firstDiffSuffix(expectedText, foundText) {
 
 function compose(name, cfg, root, errors, warnings) {
   const bricksAbs = join(root, cfg.bricks);
-  const raw = readFileSync(join(root, cfg.recipes, name + ".md"), "utf8").replace(/\r\n/g, "\n");
+  const raw = readFileSync(join(root, cfg.recipes, name + ".md"), "utf8").replace(/\r\n?/g, "\n");
   const { fm, body } = splitFm(raw);
   if (cfg.conformance && fm !== null) validateConformance(name, fm, errors);
   // F-03: an include directive on a line inside a fenced code block is left verbatim (`whole`),
@@ -309,7 +309,7 @@ function compose(name, cfg, root, errors, warnings) {
       }
     } catch { errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include of missing brick: ${bp}` }); return `‹MISSING BRICK: ${bp}›`; }
     const params = parseParams(rawP);
-    let b = splitFm(readFileSync(file, "utf8").replace(/\r\n/g, "\n")).body;
+    let b = splitFm(readFileSync(file, "utf8").replace(/\r\n?/g, "\n")).body;
     // Bricks must not include bricks (composition lives in the recipe, AGENTS.md's "no nesting"
     // rule enforced as a gate) — use matchAll (NEVER .test()/.exec() on the shared module-level
     // INCLUDE regex: it is global, so .test() would leave `lastIndex` dirty and corrupt a LATER,
@@ -397,12 +397,22 @@ export function run({ root = process.cwd(), mode = "build", dryRun = false } = {
     for (let i = 0; i < outsAbs.length; i++) {
       const outEntry = cfg.outs[i];
       const dest = join(outsAbs[i], name + ".md");
-      const raw = existsSync(dest) ? readFileSync(dest, "utf8") : null;
+      // Fable B9: a DIRECTORY squatting the destination name used to crash raw (EISDIR) in both
+      // modes — an environment problem, not a programming error, so it must be a structured,
+      // blocking error (nothing written project-wide, like any build error), not a stack trace.
+      let raw = null;
+      if (existsSync(dest)) {
+        try { raw = readFileSync(dest, "utf8"); }
+        catch (e) {
+          errors.push({ kind: "build", skill: name, msg: `build error: [${name}] cannot read destination ${outEntry}/${name}.md (${e.code ?? e.message}) — is it a directory?` });
+          continue;
+        }
+      }
       if (mode === "check") {
         // Drift in ANY destination fails the gate; each drifted destination is reported by name.
         if (raw === null) { drift++; errors.push({ kind: "drift", skill: name, msg: `drift: ${outEntry}/${name}.md is missing (run \`npx nbp-skillforge build\`)` }); continue; }
         // Drift-gate is CR-insensitive: a CRLF checkout (git autocrlf) is NOT a false positive.
-        const cur = raw.replace(/\r\n/g, "\n");
+        const cur = raw.replace(/\r\n?/g, "\n");
         if (cur !== built) { drift++; errors.push({ kind: "drift", skill: name, msg: `drift: ${outEntry}/${name}.md is out of sync with its recipe${firstDiffSuffix(built, cur)}` }); }
       } else {
         // Build compares RAW bytes so it stays the source of the "output is always LF" guarantee:
@@ -429,7 +439,7 @@ export function run({ root = process.cwd(), mode = "build", dryRun = false } = {
         // ephemeral forge-onboard agent skill) — package tooling is never an orphan, so strict
         // mode and an installed tool can coexist. Read only the rare orphan CANDIDATES (never
         // every governed file), so the cost is negligible.
-        try { if (hasForgeRole(splitFm(readFileSync(join(outsAbs[i], f), "utf8").replace(/\r\n/g, "\n")).fm)) continue; } catch {}
+        try { if (hasForgeRole(splitFm(readFileSync(join(outsAbs[i], f), "utf8").replace(/\r\n?/g, "\n")).fm)) continue; } catch {}
         orphans++; errors.push({ kind: "orphan", skill: n, msg: `orphan: ${cfg.outs[i]}/${n}.md has no recipe (enforceGenerated)` });
       }
     }
@@ -444,11 +454,22 @@ export function run({ root = process.cwd(), mode = "build", dryRun = false } = {
   if (mode === "build" && !blocking && !dryRun) {
     // Skip-if-unchanged: only touch a file whose content actually differs. An identical re-build
     // leaves the working tree clean (no spurious mtime churn) and makes `written` an honest count.
-    for (const { dest, built, status } of plan) {
-      if (status === "same") continue;
-      mkdirSync(dirname(dest), { recursive: true });
-      writeFileSync(dest, built);
-      written++;
+    // Fable B8: a write failure (read-only file, EPERM/EACCES) is an ENVIRONMENT error — it
+    // becomes a structured build error (ok:false, counted honestly) instead of a raw stack trace
+    // that aborts mid-loop with no report; consumers like onboard then take their normal
+    // "build failed" path (report written, backup preserved).
+    // Deliberately BEST-EFFORT across destinations: the remaining writes still run (a broken
+    // out[0] must not leave out[1] stale too). All-or-nothing applies to CONTENT errors (the
+    // `blocking` gate above, before any write) — not to per-destination I/O failures.
+    for (const p of plan) {
+      if (p.status === "same") continue;
+      try {
+        mkdirSync(dirname(p.dest), { recursive: true });
+        writeFileSync(p.dest, p.built);
+        written++;
+      } catch (e) {
+        errors.push({ kind: "build", skill: p.name, msg: `build error: [${p.name}] cannot write ${p.out}/${p.name}.md (${e.code ?? e.message}) — read-only file or permissions?` });
+      }
     }
   }
 

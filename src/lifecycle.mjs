@@ -129,9 +129,14 @@ export function importFile(srcPath, { root = process.cwd(), name, force = false 
   // Strip a leading BOM alongside the CRLF normalization — a BOM'd source would silently defeat
   // splitFm's ^--- anchor and import the whole frontmatter as body text (found in the F-31 dual
   // review, verified by execution). The engine's own output is always BOM-less LF.
-  const raw = readFileSync(srcPath, "utf8").replace(/^﻿/, "").replace(/\r\n/g, "\n");
+  const raw = readFileSync(srcPath, "utf8").replace(/^﻿/, "").replace(/\r\n?/g, "\n");
   const { fm, body } = splitFm(raw);
-  const cleanBody = body.replace(GENERATED_BANNER_RE, "");
+  // Fable B10: tolerate blank lines between the fm and a previous GENERATED banner (an editor
+  // artifact) — without this, only a banner at the exact body start was stripped and the next
+  // build double-bannered. The blank lines themselves are preserved only when NO banner follows
+  // (a legitimate leading gap in a hand-written file is content, not artifact).
+  const LENIENT_BANNER_RE = new RegExp(`^\\n*${GENERATED_BANNER_RE.source.replace(/^\^/, "")}`); // strip the anchor safely, not positionally
+  const cleanBody = body.replace(LENIENT_BANNER_RE, "");
 
 
   // Extract the frontmatter's OWN `name:` value independently of the precedence chain below (not
@@ -243,6 +248,10 @@ export function restore(skill, { root = process.cwd() } = {}) {
   const bad = unsafeName(skill);
   if (bad) return { ok: false, msg: bad };
   const P = paths(root);
+  // Same pre-flight as remove/rename/gc: restore MOVES files into recipes/ and bricks/ — a
+  // role-overlapping config must be refused before anything lands in a colliding tree.
+  const overlap = roleOverlapError(root, P.cfg);
+  if (overlap) return { ok: false, msg: overlap };
   const dir = join(P.archive, skill);
   if (!existsSync(dir)) return { ok: false, msg: `nothing archived for: ${skill}` };
   const recDest = join(P.recipes, skill + ".md");
@@ -267,6 +276,12 @@ export function restore(skill, { root = process.cwd() } = {}) {
 // ── gc (orphan bricks: ref-count 0) ──────────────────────────────────────────
 export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
   const P = paths(root);
+  // Fable B2 (CONFIRMED destructive): with a role-overlapping config (e.g. recipes nested inside
+  // bricks), gc's recursive bricks scan lists RECIPES as "orphan bricks" and --apply --hard
+  // deletes them permanently — build/check refuse such a config, and remove/rename already fail
+  // closed pre-flight (F-26 review); gc gets the same guard.
+  const overlap = roleOverlapError(root, P.cfg);
+  if (overlap) return { ok: false, msg: overlap };
   const consumers = brickConsumers(root, P.cfg);
   // Repo meta / community-health files dropped under bricks/ are documentation, never bricks —
   // so gc never reports or archives them. Matched by canonical basename, at any depth, any case.
@@ -278,8 +293,8 @@ export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
   const DOC_BASENAMES = /^(readme|changelog|contributing|code_of_conduct|license|licence)$/i;
   const isDoc = (b) => DOC_BASENAMES.test(String(b).split("/").pop());
   const orphans = mdFiles(P.bricks).map((f) => String(f).replace(/\.md$/, "")).filter((b) => !consumers[b] && !isDoc(b));
+  const policy = (hard || P.cfg.deletePolicy === "hard") ? "hard" : "soft"; // fail closed to soft
   if (apply && orphans.length) {
-    const policy = (hard || P.cfg.deletePolicy === "hard") ? "hard" : "soft"; // fail closed to soft
     for (const b of orphans) {
       const src = join(P.bricks, b + ".md");
       if (policy === "hard") { rmSync(src); pruneEmptyDirs(dirname(src), P.bricks); continue; } // F-10
@@ -290,8 +305,12 @@ export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
       pruneEmptyDirs(dirname(src), P.bricks); // F-10
     }
   }
+  // Fable B7: the message must say what actually happened — "archived" for a hard delete lied
+  // about a permanent, unrecoverable operation.
+  // The dry-run hint is policy-aware too — "run with --apply to archive" under deletePolicy:
+  // "hard" would promise recoverability the actual apply doesn't offer.
   return { ok: true, orphans, applied: apply,
-    msg: orphans.length ? `${orphans.length} orphan brick(s): ${orphans.join(", ")}${apply ? " — archived" : " (run with --apply to archive)"}` : "no orphan bricks." };
+    msg: orphans.length ? `${orphans.length} orphan brick(s): ${orphans.join(", ")}${apply ? (policy === "hard" ? " — deleted (permanent)" : " — archived") : ` (run with --apply to ${policy === "hard" ? "delete permanently" : "archive"})`}` : "no orphan bricks." };
 }
 
 // ── init (scaffold a forge project) ──────────────────────────────────────────
@@ -394,7 +413,7 @@ export function rename(oldName, newName, { root = process.cwd() } = {}) {
   if (existsSync(dest)) return { ok: false, msg: `target already exists: ${newName}` };
 
   const raw = readFileSync(src, "utf8");
-  const { fm, body } = splitFm(raw.replace(/\r\n/g, "\n"));
+  const { fm, body } = splitFm(raw.replace(/\r\n?/g, "\n"));
   // C6/F-09: the recipe's OWN fm `name:` value — may differ from `oldName` (the filename) when
   // they've drifted apart. Extracted the same way importFile does (quotes stripped), so a STALE
   // fm name is corrected regardless of how it got out of sync with the filename, instead of
