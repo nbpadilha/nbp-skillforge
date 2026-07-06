@@ -6,8 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-06
+
+> The **migration release**: the package is now `nbp-skillforge`, one recipe set can build to
+> N agent platforms, and an existing skill library migrates into the forge with one command —
+> snapshot-protected, fidelity-gated, with mechanical factoring and an assisted (agent) step for
+> the divergent parts. Every load-bearing change in this release went through dual cross-vendor
+> adversarial review (codex gpt-5.5 + agy), with every confirmed flag fixed and pinned by tests.
+
 ### Fixed
-Post-release adversarial bug hunt (Fable), 12 confirmed-by-execution bugs, most-critical first:
+Pre-publish adversarial bug hunt (Fable), 12 confirmed-by-execution bugs, most-critical first:
 - **Data loss (multi-out):** `onboard --apply` overwrote a byte-DIVERGENT same-named file sitting
   in another out dir without snapshotting it (and could then announce "100% migrated"). Such
   files are now `skip-collision`; a byte-identical copy is still allowed.
@@ -31,14 +39,6 @@ Post-release adversarial bug hunt (Fable), 12 confirmed-by-execution bugs, most-
   (permanent)"); `import` double-bannered when blank lines sat between the frontmatter and an old
   GENERATED banner; option values starting with `-` were impossible to pass; `onboard
   --install-skill --json` printed decorated text instead of JSON.
-
-## [0.7.0] - 2026-07-06
-
-> The **migration release**: the package is now `nbp-skillforge`, one recipe set can build to
-> N agent platforms, and an existing skill library migrates into the forge with one command —
-> snapshot-protected, fidelity-gated, with mechanical factoring and an assisted (agent) step for
-> the divergent parts. Every load-bearing change in this release went through dual cross-vendor
-> adversarial review (codex gpt-5.5 + agy), with every confirmed flag fixed and pinned by tests.
 
 ### Added
 - **F-31 Fase 5 — assisted onboarding skill:** `forge onboard --install-skill` materializes the
