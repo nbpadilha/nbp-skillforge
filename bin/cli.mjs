@@ -29,7 +29,10 @@ function usage(cmd) {
   console.log("usage: nbp-skillforge <command> [options]   (docs/tables abbreviate this as `forge`)\n");
   for (const k of ["build", "check", "init", "list", "new", "import", "onboard", "rename", "remove", "restore", "gc", "install-hooks", "help"]) console.log("  " + HELP[k]);
   console.log("\nPaths/options come from forge.config.json at the root (see SPEC.md).");
-  console.log("--json (build/check/list/gc only): print ONLY the machine-readable result (JSON.stringify(result, null, 2)) — no decorated lines. Exit code unchanged. See README's \"JSON output\" section for the shape.");
+  // The --json roster and the pointer must match reality: onboard is a full --json citizen (the
+  // finishJson path + jsonErr guard both include it), and the shape reference lives in SPEC.md —
+  // README has no "JSON output" section (it deliberately defers config/JSON docs to the SPEC).
+  console.log("--json (build/check/list/gc/onboard only): print ONLY the machine-readable result (JSON.stringify(result, null, 2)) — no decorated lines. Exit code unchanged. See SPEC.md's \"JSON output (--json)\" section for the shape.");
 }
 
 const argv = process.argv.slice(2);
@@ -183,7 +186,12 @@ switch (cmd) {
   }
   case "install-hooks": finish(installHooks({ root, force })); break;
   case "rename":  if (!pos[1] || !pos[2]) finish({ ok: false, msg: `usage: ${HELP.rename}` }); finish(rename(pos[1], pos[2], { root })); break;
-  case "help":    usage(pos[1]); process.exit(0);
+  case "help":
+    // `help <unknown-topic>` used to fall through to the GENERAL help with exit 0 — success-shaped
+    // output for a typo ("help chekc"), so a script probing a command's existence never noticed.
+    // Same contract as an unknown COMMAND: stderr + usage + exit 2. `help` alone stays exit 0.
+    if (pos[1] && !HELP[pos[1]]) { console.error(`unknown command: ${pos[1]}`); usage(); process.exit(2); }
+    usage(pos[1]); process.exit(0);
   default:
     console.error(`unknown command: ${cmd}`); usage(); process.exit(2);
 }

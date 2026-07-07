@@ -322,7 +322,18 @@ function compose(name, cfg, root, errors, warnings) {
       }
     } catch { errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include of missing brick: ${bp}` }); return `‹MISSING BRICK: ${bp}›`; }
     const params = parseParams(rawP);
-    let b = splitFm(readFileSync(file, "utf8").replace(/\r\n?/g, "\n")).body;
+    // A brick that exists but cannot be READ — a directory squatting `<name>.md` (EISDIR: it
+    // passes existsSync, realpath, and the case-match above), or a permissions failure — is an
+    // ENVIRONMENT problem, not a programming error: structured, blocking build error (nothing
+    // written project-wide), never a raw stack trace. Mirrors the destination-side EISDIR
+    // handling in run() (Fable B9) — the source side had no such symmetry until now.
+    let brickRaw;
+    try { brickRaw = readFileSync(file, "utf8"); }
+    catch (e) {
+      errors.push({ kind: "build", skill: name, msg: `build error: [${name}] cannot read brick ${bp} (${e.code ?? e.message}) — is it a directory?` });
+      return `‹UNREADABLE BRICK: ${bp}›`;
+    }
+    let b = splitFm(brickRaw.replace(/\r\n?/g, "\n")).body;
     // Bricks must not include bricks (composition lives in the recipe, AGENTS.md's "no nesting"
     // rule enforced as a gate) — use matchAll (NEVER .test()/.exec() on the shared module-level
     // INCLUDE regex: it is global, so .test() would leave `lastIndex` dirty and corrupt a LATER,
@@ -392,12 +403,20 @@ export function run({ root = process.cwd(), mode = "build", dryRun = false } = {
   const outsAbs = cfg.outs.map((o) => join(root, o));
   const bricksAbs = join(root, cfg.bricks);
   const archiveAbs = join(root, cfg.archive);
-  // Early error returns still carry `destinations` (review fix: the SPEC documents it as always
-  // present on build/check results — a JSON consumer must never branch on its absence).
+  // Early error returns carry the FULL result shape (SPEC "JSON output": plan/out — and every
+  // aggregate field — always present; consumers never branch on a field's absence). Before this,
+  // the two config-error paths emitted a partial {ok,errors,drift,orphans,destinations} with no
+  // warnings/count/written/unchanged (and no plan on build), breaking exactly that contract.
+  // Zeroed/empty by construction: a refused config composed nothing and wrote nothing.
+  const configErr = (msg) => ({
+    ok: false, errors: [{ kind: "config", msg }], drift: 0, orphans: 0,
+    warnings: [], count: 0, written: 0, unchanged: 0,
+    plan: mode === "build" ? [] : undefined, // mirrors the happy path: plan is a build-only field
+    destinations: cfg.outs.length,
+  });
   const overlap = roleOverlapError(root, cfg);
-  if (overlap)
-    return { ok: false, errors: [{ kind: "config", msg: overlap }], drift: 0, orphans: 0, destinations: cfg.outs.length };
-  if (!existsSync(recipesAbs)) return { ok: false, errors: [{ kind: "config", msg: `no recipes directory: ${cfg.recipes} — run \`npx nbp-skillforge init\` to scaffold a forge project` }], drift: 0, orphans: 0, destinations: cfg.outs.length };
+  if (overlap) return configErr(overlap);
+  if (!existsSync(recipesAbs)) return configErr(`no recipes directory: ${cfg.recipes} — run \`npx nbp-skillforge init\` to scaffold a forge project`);
 
   const names = readdirSync(recipesAbs).filter((f) => f.endsWith(".md")).map((f) => basename(f, ".md"));
   const errors = [];

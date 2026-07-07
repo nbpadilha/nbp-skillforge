@@ -73,7 +73,10 @@ record the rejection in your summary. Never proceed on silence.
 - Leave `forge check` green. If every skill in the project is governed and `enforceGenerated`
   is still off, remind the human it can be enabled (the engine auto-enables only on the
   mechanical pass's 100% condition).
-- This skill is package tooling: suggest removing it (`rm` the installed copy) or leave it —
-  the `forge-role` marker keeps it out of every onboarding scan AND out of `enforceGenerated`'s
-  orphan scan (the engine treats marked files as package tooling, never as user skills), so
-  leaving it in place is safe even under strict mode. Removing is optional tidiness.
+- This skill is package tooling. The engine manages its lifecycle: a mechanical run that ends
+  100% migrated removes the installed copy **automatically** (as part of the `enforceGenerated`
+  auto-enable), and `forge onboard --install-skill` brings it back on demand. If it is still
+  present (the run had skips, or it was installed after), leaving it in place is safe even under
+  strict mode — the `forge-role` marker keeps it out of every onboarding scan AND out of
+  `enforceGenerated`'s orphan scan (the engine treats marked files as package tooling, never as
+  user skills) — or remove it by hand (`rm` the installed copy) if the human prefers.

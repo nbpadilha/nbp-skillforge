@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { create, remove, restore, gc, rename, init, list, importFile } from "../src/lifecycle.mjs";
 import { run } from "../src/compose.mjs";
@@ -1080,6 +1080,12 @@ test("F-26 init: scaffold write round-trips a fresh project's out as a plain STR
     const cfg = JSON.parse(read(join(root, "forge.config.json")));
     assert.equal(typeof cfg.out, "string", "a fresh init writes out as a string, never an array");
     assert.equal("outs" in cfg, false, "the derived outs field never leaks into the scaffold");
+    // The scaffold spells out EVERY documented key, `conformance` included (it was missing) —
+    // pinned as the exact key set so a future config key must consciously decide to be scaffolded.
+    assert.deepEqual(Object.keys(cfg),
+      ["bricks", "recipes", "out", "archive", "deletePolicy", "enforceGenerated", "conformance"],
+      "scaffold carries the full documented key set, in SPEC order");
+    assert.equal(cfg.conformance, true, "conformance defaults to true in the scaffold");
   } finally { cleanup(root); }
 });
 
@@ -1340,5 +1346,149 @@ test("Fable B7: gc --apply --hard says 'deleted (permanent)', never 'archived'",
     const soft = makeRoot({ bricks: { orphan: "nobody uses me" } });
     assert.match(gc(soft, { apply: true }).msg, /archived/);
     cleanup(soft);
+  } finally { cleanup(root); }
+});
+
+// ═══ Release-readiness fixes (session 2026-07-07): junction traversal + create pre-flight ═══════
+// A junction (win32 — creatable WITHOUT admin, unlike a real dir symlink) or a dir symlink
+// (POSIX) inside bricks/: mdFiles' readdirSync({recursive}) DESCENDS the reparse point, so
+// unguarded sweeps saw the user's EXTERNAL files as governable bricks. Verified by execution both
+// ways: the pre-fix gc --apply --hard deleted the real file THROUGH the link.
+const linkDirInto = (parent, linkName, targetAbs) =>
+  symlinkSync(targetAbs, join(parent, linkName), process.platform === "win32" ? "junction" : "dir");
+
+test("gc: files behind a junction/dir-symlink in bricks/ are never listed as orphans nor touched (data-loss guard)", () => {
+  const root = makeRoot({
+    bricks: { b: "used brick", "true-orphan": "genuinely unused" },
+    recipes: { fix: "---\nname: fix\ndescription: d.\n---\n# fix\n\n<!-- include: b -->\n" },
+  });
+  try {
+    // External target lives OUTSIDE every role dir (still inside the temp root so cleanup gets it).
+    const external = join(root, "user-notes");
+    const SENTINEL = "SENTINEL — the user's real file, reached only through the junction\n";
+    write(join(external, "precious.md"), SENTINEL);
+    linkDirInto(join(root, "bricks"), "linked", external);
+    // Dry-run: the external file is NOT an orphan (not ours to govern) — the real orphan still is.
+    const dry = gc(root);
+    assert.deepEqual(dry.orphans, ["true-orphan"], "external file never listed; a real orphan still caught");
+    // Apply --hard (the destructive repro): the external file must survive byte-for-byte.
+    const r = gc(root, { apply: true, hard: true });
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.orphans, ["true-orphan"]);
+    assert.equal(read(join(external, "precious.md")), SENTINEL, "external content untouched through the junction");
+    assert.equal(has(join(root, "bricks", "linked")), true, "the link itself is left in place");
+    assert.equal(has(brick(root, "true-orphan")), false, "the genuine orphan was still swept");
+  } finally { cleanup(root); }
+});
+
+test("restore: a junction planted in the archived bricks dir never drags external files into bricks/", () => {
+  const root = makeRoot({
+    bricks: { mine: "exclusive brick body" },
+    recipes: { solo: "---\nname: solo\ndescription: d.\n---\n# solo\n\n<!-- include: mine -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    assert.equal(remove("solo", { root }).ok, true); // soft → _archive/solo/{recipe.md,bricks/mine.md}
+    const external = join(root, "user-notes");
+    const SENTINEL = "SENTINEL — must not be renamed out of the user's folder\n";
+    write(join(external, "precious.md"), SENTINEL);
+    linkDirInto(archived(root, "solo", "bricks"), "linked", external);
+    const r = restore("solo", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.deepEqual(r.restored, ["mine"], "only the genuinely archived brick is restored");
+    assert.equal(read(brick(root, "mine")), "exclusive brick body", "real brick back in place");
+    assert.equal(has(join(root, "bricks", "linked")), false, "nothing junction-reached lands in bricks/");
+    assert.equal(read(join(external, "precious.md")), SENTINEL, "external content untouched (no move through the link)");
+    // The trailing recursive rmSync unlinks the junction WITHOUT traversing it (fs.rm never
+    // follows reparse points) — asserted by the sentinel surviving while the archive dir is gone.
+    assert.equal(has(archived(root, "solo")), false, "archive entry cleaned up");
+  } finally { cleanup(root); }
+});
+
+test("new: a role-overlapping config is refused BEFORE the recipe is written (fail closed, zero files)", () => {
+  // Variant 1 (the execution repro): out[1] === bricks → exit path taken, but the pre-fix create
+  // had already written recipes/zzz.md.
+  const root = makeRoot({ config: { out: ["out", "bricks"] } });
+  try {
+    const r = create("zzz", { root });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /must not be inside or equal to/);
+    assert.equal(has(recipe(root, "zzz")), false, "no recipe written");
+    assert.equal(has(join(root, "recipes")), false, "not even the recipes dir is created");
+  } finally { cleanup(root); }
+  // Variant 2 (worse pre-fix damage): recipes nested INSIDE bricks — the write itself landed
+  // inside the bricks tree.
+  const root2 = makeRoot({ config: { recipes: "bricks/recipes" } });
+  try {
+    const r2 = create("zzz", { root: root2 });
+    assert.equal(r2.ok, false);
+    assert.match(r2.msg, /must not be inside or equal to/);
+    assert.equal(has(join(root2, "bricks", "recipes", "zzz.md")), false, "nothing written inside bricks/");
+    assert.equal(has(join(root2, "bricks")), false, "no dir scaffolded under the hostile config");
+  } finally { cleanup(root2); }
+});
+
+// ═══ Cross-vendor review HIGHs (2026-07-07): a DIRECTORY named `*.md` is never a brick ═════════
+// readdirSync({recursive}) lists dirs too, and the bare endsWith(".md") filter let a directory
+// pose as a brick: gc --apply --hard crashed EISDIR (soft would MOVE the whole tree), and remove
+// crashed AFTER deleting the recipe. mdFiles is now file-only (statSync per hit) and remove's
+// exclusive sweep requires a regular file — all verified by execution below.
+test("HIGH A: gc never treats a directory named *.md as an orphan (no EISDIR, dir + contents intact)", () => {
+  const root = makeRoot({
+    bricks: { b: "used brick", "true-orphan": "genuinely unused FILE orphan" },
+    recipes: { fix: "---\nname: fix\ndescription: d.\n---\n# fix\n\n<!-- include: b -->\n" },
+  });
+  try {
+    const SENT = "user payload inside the squatting dir — must survive the sweep\n";
+    write(join(root, "bricks", "orphan.md", "keep.txt"), SENT); // dir named *.md, non-md payload
+    const dry = gc(root);
+    assert.deepEqual(dry.orphans, ["true-orphan"], "the dir is never listed; the real FILE orphan still is");
+    const r = gc(root, { apply: true, hard: true }); // pre-fix: raw ERR_FS_EISDIR crash right here
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.orphans, ["true-orphan"]);
+    assert.equal(read(join(root, "bricks", "orphan.md", "keep.txt")), SENT, "dir contents untouched");
+    assert.equal(has(brick(root, "true-orphan")), false, "the legitimate file orphan was still swept");
+  } finally { cleanup(root); }
+});
+
+test("HIGH B: remove with an exclusive DIR-brick completes cleanly (recipe gone, dir intact, both policies)", () => {
+  for (const hard of [true, false]) {
+    const root = makeRoot({ recipes: { b: "---\nname: b\ndescription: d.\n---\n# b\n\n<!-- include: excl -->\n" } });
+    try {
+      const SENT = "payload inside the dir-brick — must survive remove\n";
+      write(join(root, "bricks", "excl.md", "keep.txt"), SENT); // the exclusive "brick" is a DIR
+      const r = remove("b", { root, hard }); // pre-fix: recipe deleted, THEN EISDIR (hard) / tree-move (soft)
+      assert.equal(r.ok, true, `${hard ? "hard" : "soft"}: ${r.msg}`);
+      assert.equal(r.build.ok, true, "the follow-up build actually ran and succeeded");
+      assert.equal(has(recipe(root, "b")), false, "recipe removed");
+      assert.deepEqual(r.exclusive, [], "a non-file target never enters the exclusive sweep");
+      assert.equal(read(join(root, "bricks", "excl.md", "keep.txt")), SENT, "dir-brick left on disk untouched");
+      assert.match(r.msg, /Kept \(shared\): excl/, "the keep is reported, never silent");
+      if (!hard) assert.equal(has(archived(root, "b", "recipe.md")), true, "soft: recipe archived as usual");
+    } finally { cleanup(root); }
+  }
+});
+
+test("HIGH A/B follow-up: restore never moves a directory named *.md out of the archive into bricks/", () => {
+  const root = makeRoot({
+    bricks: { mine: "exclusive brick body" },
+    recipes: { solo: "---\nname: solo\ndescription: d.\n---\n# solo\n\n<!-- include: mine -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    assert.equal(remove("solo", { root }).ok, true); // soft → _archive/solo/{recipe.md, bricks/mine.md}
+    // Plant a dir named *.md in the skill's archived bricks — the pre-fix scan would have
+    // renameSync'd the WHOLE dir into bricks/ as if it were one brick (and counted it as a
+    // conflict against an existing bricks/fake.md).
+    write(archived(root, "solo", "bricks", "fake.md", "keep.txt"), "planted dir payload\n");
+    const r = restore("solo", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.deepEqual(r.restored, ["mine"], "only the real archived brick FILE is restored");
+    assert.equal(read(brick(root, "mine")), "exclusive brick body");
+    assert.equal(has(join(root, "bricks", "fake.md")), false, "the dir was never moved into bricks/");
+    // The trailing recursive rmSync consumes the archive entry (planted dir included) — that
+    // cleanup is restore's documented contract; the guard here is only about never MOVING a
+    // non-file into bricks/ (or counting it as a conflict).
+    assert.equal(has(archived(root, "solo")), false, "archive entry consumed as usual");
   } finally { cleanup(root); }
 });

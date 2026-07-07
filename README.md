@@ -124,6 +124,7 @@ arbitrary version and running it at commit time. This is the canonical LOCAL-ONL
 (mirroring the shipped hook):
 
 ```sh
+#!/bin/sh
 # LOCAL-ONLY resolution — prefer the project-local bin, fall back to PATH, else skip.
 if [ -x "node_modules/.bin/nbp-skillforge" ]; then
   forge_bin="node_modules/.bin/nbp-skillforge"

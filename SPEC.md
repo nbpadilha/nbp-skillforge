@@ -24,7 +24,10 @@ without a recipe is left untouched (and, with `enforceGenerated`, flagged as an 
   succeed, the file is still written) — printed as `warning: [<skill>] include <brick>: unused
   param(s): <k1>, <k2>`; useful for catching a typo'd key.
 - A parameter value cannot contain the literal sequence `-->` (it closes the HTML comment that
-  carries the directive) — same as any HTML comment. Use a placeholder in the brick if you need one.
+  carries the directive) — same as any HTML comment. Precisely: the directive's parameters end at
+  the **first** `-->` on the line; whatever follows it lands **verbatim in the output body** — no
+  error, no warning (the engine cannot tell it from ordinary text after a comment). Use a
+  placeholder in the brick if you need the sequence itself.
 - `<brick-path>` is **case-sensitive** and must match the on-disk file exactly, even on a
   case-insensitive filesystem (Windows/macOS) — a mismatched case is a **build error**
   (`include path case mismatch`), not a silently-succeeding include.
@@ -76,7 +79,7 @@ without a recipe is left untouched (and, with `enforceGenerated`, flagged as an 
   | `summary` | one line: what this brick contributes when included |
   | `kind` | optional tag for how it's used (e.g. `step`, `checklist`, `contract`) |
   | `guarantees-not` | optional: limits the brick explicitly does **not** promise (so a recipe author doesn't assume more than it delivers) |
-  | `keep` | `keep: true` **pins** the brick against auto-archival: exempt from `gc`'s orphan sweep and `remove`'s exclusive-brick sweep, even with `--hard` (see Lifecycle & ownership). For an intentionally-orphan brick, e.g. staging content not yet wired into a recipe. **Fail-closed:** only a well-formed `true` pins (unquoted, or quoted with *matching* quotes); any other value (`false`, `yes`, `"maybe"`, mismatched quotes), a missing field, no frontmatter at all, or an unreadable brick = **not pinned**. |
+  | `keep` | `keep: true` **pins** the brick against auto-archival: exempt from `gc`'s orphan sweep and `remove`'s exclusive-brick sweep, even with `--hard` (see Lifecycle & ownership). For an intentionally-orphan brick, e.g. staging content not yet wired into a recipe. **Fail-closed:** only a well-formed `true` pins (unquoted, or quoted with *matching* quotes); any other value (`false`, `yes`, `"maybe"`, mismatched quotes), a missing field, no frontmatter at all, or an unreadable brick = **not pinned**. A `keep` field that is **present but malformed** on a sweep candidate is never silently swept: `gc`/`remove` append `warning: keep field present but not well-formed (NOT pinned): <bricks> — only \`keep: true\` pins (see SPEC).` and list the bricks in the additive `suspectKeep` array of their results. |
 
   Unknown fields are allowed and ignored. Since the whole block is dropped, nothing here reaches the
   generated file.
@@ -162,11 +165,14 @@ Optional; every field falls back to the default below when the file is absent or
   the agentskills SKILL.md standard (see Conformance). Set `false` to disable.
 
 ## JSON output (`--json`)
-`forge build`/`check`/`list`/`gc` accept `--json`: stdout becomes **only**
+`forge build`/`check`/`list`/`gc`/`onboard` accept `--json`: stdout becomes **only**
 `JSON.stringify(result, null, 2)` — no `✔`/`✗`/`  • ` decorated lines — for scripting/CI. The exit
 code is unchanged (`0` on success, `1`/`2` on failure). Error paths are covered: an invalid
-`forge.config.json` or an unknown flag on one of these four commands prints
-`{ "ok": false, "error": "..." }` on stdout. Lifecycle commands that mutate the tree
+`forge.config.json` or an unknown flag on one of these five commands prints
+`{ "ok": false, "error": "..." }` on stdout. A build/check result refused by a **config error**
+(role overlap, missing recipes dir) still carries the **full** result shape below — every
+aggregate field present and zeroed, `plan: []` on build — so a consumer never branches on a
+field's absence. Lifecycle commands that mutate the tree
 (`new`/`import`/`remove`/`restore`/`rename`) are **out of scope** for `--json` today; the flag is
 accepted but has no effect on their output.
 
@@ -175,10 +181,16 @@ accepted but has no effect on their output.
 | `build` / `build --dry-run` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged, plan, destinations }` — `plan` is `[{ name, out, status }]`, one entry per (recipe × out) pair (`status`: `"create"` \| `"change"` \| `"same"`); `out` is **always present**, even single-destination, so consumers never branch on config shape. `destinations` = number of out entries. No `msg` field. |
 | `check` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged, destinations }`. No `msg` field. |
 | `list` | `{ ok, skills, bricks, msg }` — `skills` is `[{ skill, bricks: [name, ...] }]`; `bricks` is `[{ brick, refCount, usedBy: [skill, ...] }]`. |
-| `gc` | `{ ok, orphans, pinned, applied, msg }` — `orphans` is `[brick, ...]`; `pinned` is `[brick, ...]` (pinned orphans left untouched — always present, `[]` when none; additive, no pre-existing field changed); `applied` is `true` only with `--apply`. |
+| `gc` | `{ ok, orphans, pinned, suspectKeep, applied, msg }` — `orphans` is `[brick, ...]`; `pinned` is `[brick, ...]` (pinned orphans left untouched — always present, `[]` when none; additive, no pre-existing field changed); `suspectKeep` is `[brick, ...]` (sweep candidates whose `keep` field is present but malformed — warned, NOT pinned; always present, `[]` when none); `applied` is `true` only with `--apply`. |
+| `onboard` (dry-run) | `{ ok, applied: false, root, entries, msg }` — `entries` is one object per scanned file with its disposition (`status`, `reason`, optional `proposal`); entries also carry internal scan fields beyond the disposition (informative, not contractual). |
+| `onboard --apply` | `{ ok, applied, root, entries, backupDir, gate, enforced, factoring, warnings, msg }` — `gate` is the per-skill fidelity verdict; `factoring` is `{ factored, kept, nearDups, variants }` (present only with `--factor`); `enforced` is `true` when the run auto-enabled `enforceGenerated`. |
 
 `errors` entries are `{ kind, skill, msg }` (`kind` ∈ `"build"` \| `"conformance"` \| `"drift"` \|
 `"orphan"` \| `"config"`); `msg` is the same full text the non-json CLI prints.
+
+`remove`'s result also carries the additive `pinned` and `suspectKeep` arrays (same semantics as
+`gc`'s) — but `remove` itself remains out of `--json` scope, so they surface programmatically and
+via the appended message text, not as JSON on stdout.
 
 ## Lifecycle & ownership
 - `build` writes each generated file **only when its composed content changed** (skip-if-unchanged):
@@ -251,13 +263,19 @@ scans another folder. `--json` supported.
 **Discovery & exclusion (all deterministic, no LLM):** first-level `*.md` files of the scanned
 root. Every file gets an explicit disposition — nothing is silently dropped:
 - `eligible` — user-authored, will be onboarded.
-- `excluded-generated` — carries a GENERATED banner (old `nbp-forge` or new `nbp-skillforge`
-  signature; detected AFTER frontmatter split). `excluded-has-recipe` — already governed.
+- `excluded-generated` — carries the GENERATED banner (old `nbp-forge` or new `nbp-skillforge`
+  signature; detected AFTER frontmatter split): output files are never onboarded — edit the
+  recipe instead (the banner alone decides; the recipe may even have been deleted since).
+  `excluded-has-recipe` — already governed.
   `excluded-forge-role` — nbp-skillforge's own tooling (frontmatter marker).
-- `skip-nested` (subfolders are v1 out of scope) · `skip-non-utf8` · `skip-include-like` (a
+- `skip-nested` (subfolders are v1 out of scope) · `skip-non-utf8` · `skip-symlink` (symlinked
+  skills are not onboarded — mirrors the engine's symlink stance) · `skip-unreadable` (broken
+  link, directory masquerading as `.md`, permissions) · `skip-include-like` (a
   directive the engine WOULD expand — a plain one outside a fence, or a bang `include!:` directive
   **anywhere**, even inside a fence — no safe verbatim path; fencing no longer proves a file is
   safe to onboard verbatim when the directive carries the bang) ·
+  `skip-name-mismatch` (the frontmatter `name:` diverges from the filename — importing would mint
+  a recipe under a different name than the scanned file; a proposal to align the two is included) ·
   `skip-nonconformant` (a rename is PROPOSED, never applied — renaming changes the invocation
   name) · `skip-collision` (case-fold aware; also raised when a **byte-divergent** file with the
   same name already exists in another out dir — the build would overwrite it without a snapshot;
@@ -292,6 +310,10 @@ granularities: every touched skill is re-gated; a failure **reverts that skill t
 drops a consumer-less brick (a known self-reverting case: trailing whitespace on a block's LAST
 line — expansion trims the brick body). A squatted/unwritable brick path skips only THAT group —
 other groups (including blocks inside a squatted section) still factor at their own paths.
+When a group **reuses** a pre-existing byte-identical brick instead of writing a fresh one
+(an idempotent re-run, or a later batch joining an earlier extraction), the summary's
+`N shared brick(s) extracted` gains an appended `(M reused)` clause and the report's factoring
+table marks those rows `(reused)` — both absent when everything was freshly written.
 Factoring never fails the run — worst case everything stays verbatim, reported as kept.
 
 **Near-duplicate report (report-only):** under `--factor`, block groups whose FIRST line is
@@ -302,7 +324,11 @@ brick)`: the skills involved, a per-skill diff of **only the differing lines**, 
 variant lacks the line), and a note when the variants differ in line count. The scan covers ALL
 blocks (including ones inside sections the section pass factored — a third skill's variant of an
 already-factored section still surfaces) and the ordering is fully deterministic (groups by slug
-then first line, variants by body text, skills lexicographic). **Nothing is written besides the
+then first line, variants by body text, skills lexicographic). **Grouping gotcha:** blocks are
+blank-line-delimited, so a blank line between a heading and its body makes the block — and the
+near-dup group/family — start at the **body's first line**: e.g. `### Checklist` followed by a
+blank line then `- step one` groups (and names its family) by `- step one`, not the heading; to
+group by the heading, keep it attached to the body (no blank line between them). **Nothing is written besides the
 report** — near-identical blocks are deliberately NOT auto-parameterized (that semantic judgment
 is the assisted Fase B's job, human-approved, via `forge-onboard`). The onboard summary appends
 `; N near-duplicate group(s) reported (report-only — see the report)` only when N > 0 (otherwise
@@ -366,7 +392,10 @@ frontmatter `variant-group:` — is a **pre-assembled group**, its primary input
 canonical version + `{{param}}`s per group, the human approves **per group**, and every applied
 group is verified by execution
 (`build` + `check` + diff vs the run's backup). The engine never lets the LLM's output through
-unverified — the deterministic gates stay the judge.
+unverified — the deterministic gates stay the judge. **Sequencing note:** an `--apply` run that
+ends 100% migrated **removes** an installed `forge-onboard` skill as part of the
+`enforceGenerated` auto-enable (see above) — install it **after** the `--apply` run, or just
+re-run `--install-skill` (idempotent) to bring it back on demand.
 
 ## Safety & boundaries
 - Skill names (`new`/`rename`/`remove`/`restore`/`import`) and include paths must be a single
@@ -377,6 +406,13 @@ unverified — the deterministic gates stay the judge.
 - The `bricks`/`recipes`/`archive` roles and **every `out` entry** must be **pairwise distinct,
   non-nested** directories (checked, case-insensitive on Windows/macOS, symlink-resolved when they
   exist). With multiple out entries the error message names the offending literal path.
+- **Only regular files under `bricks/` are governable.** Directory junctions/symlinks inside
+  `bricks/` (and the archive) are out of governance: the lifecycle sweeps (`gc`, `remove`,
+  `restore`) realpath-check every candidate, so a file reachable only THROUGH a linked directory
+  is never listed (not as an orphan, not as a restore conflict) and never touched. Likewise a
+  **directory** named `<brick>.md` is never a brick: lifecycle scans are file-only (stat-verified)
+  and `remove`'s exclusive sweep skips a non-file target, leaving it untouched and reported in the
+  Kept bucket.
 - **Symlinked bricks are rejected at build.** A **symlink inside `bricks/`** whose target resolves
   outside the tree is a **build error** (`include resolves outside bricks/ (symlink?)`), not followed
   — the on-disk identity check (added with case-mismatch detection) `realpath`-resolves each brick and

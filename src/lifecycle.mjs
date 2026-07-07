@@ -12,7 +12,23 @@ const mdFiles = (dir) =>
   // Normalize separators: readdirSync({recursive}) yields OS-native backslashes on Windows, but
   // include keys (brickConsumers) are always forward-slash — without this, nested bricks would be
   // mis-counted and gc/remove could archive/delete a brick that is actually in use.
-  existsSync(dir) ? readdirSync(dir, { recursive: true }).filter((f) => String(f).endsWith(".md")).map((f) => String(f).replace(/\\/g, "/")) : [];
+  //
+  // FILES ONLY (cross-vendor review HIGH, proven by execution): readdirSync({recursive}) returns
+  // DIRECTORY entries too, and a directory named `*.md` (e.g. bricks/orphan.md/) passed the
+  // suffix filter — gc then listed it as an orphan "brick" and --apply --hard crashed with a raw
+  // ERR_FS_EISDIR on the non-recursive rmSync (soft's renameSync would instead have MOVED the
+  // whole tree into the archive as if it were one brick); restore's archive scan had the same
+  // hole (a dir named `*.md` would be renamed wholesale into bricks/). A brick is a FILE by
+  // definition, so stat each hit and keep regular files only; a stat failure excludes (fail
+  // closed — an entry a sweep cannot even stat is nothing it should act on). Deliberately NOT
+  // readdirSync({recursive, withFileTypes}): the support floor is Node ≥ 18 and Dirent.path/
+  // parentPath is unstable across versions — the string list + statSync is the portable form.
+  existsSync(dir)
+    ? readdirSync(dir, { recursive: true })
+        .filter((f) => String(f).endsWith(".md"))
+        .filter((f) => { try { return statSync(join(dir, String(f))).isFile(); } catch { return false; } })
+        .map((f) => String(f).replace(/\\/g, "/"))
+    : [];
 const move = (src, dest) => { mkdirSync(dirname(dest), { recursive: true }); renameSync(src, dest); };
 const uniq = (a) => [...new Set(a)];
 
@@ -109,19 +125,22 @@ const hasMalformedKeep = (P, b) => {
 const malformedKeepWarning = (suspects) =>
   suspects.length ? ` warning: keep field present but not well-formed (NOT pinned): ${suspects.join(", ")} — only \`keep: true\` pins (see SPEC).` : "";
 
-// A brick path (from a recipe's include text) is only safe to move/delete if it resolves INSIDE
-// the bricks dir — a crafted `<!-- include: ../victim -->` must never let remove touch outside it.
-// realpath-aware so even a symlinked brick that points outside bricks/ is left untouched; falls
-// back to a lexical check when the target doesn't exist yet.
-const insideBricks = (P, b) => {
-  const target = join(P.bricks, b + ".md");
+// A file is only GOVERNABLE (listable/movable/deletable) by a sweep if it RESOLVES inside its
+// base dir — realpath-aware, so a path that merely SITS under the base lexically but crosses a
+// junction/symlink (either the file itself, or any ancestor directory component) to somewhere
+// outside is out of bounds. Falls back to a lexical check when the target doesn't exist yet
+// (nothing to realpath — and nothing a sweep could destroy either).
+const resolvesInside = (baseDir, target) => {
   try {
-    const real = realpathSync.native(target), base = realpathSync.native(P.bricks);
-    return isInside(real, base);
+    return isInside(realpathSync.native(target), realpathSync.native(baseDir));
   } catch {
-    return resolve(target).startsWith(resolve(P.bricks) + sep);
+    return resolve(target).startsWith(resolve(baseDir) + sep);
   }
 };
+// A brick path (from a recipe's include text) is only safe to move/delete if it resolves INSIDE
+// the bricks dir — a crafted `<!-- include: ../victim -->` must never let remove touch outside it.
+// realpath-aware so even a symlinked brick that points outside bricks/ is left untouched.
+const insideBricks = (P, b) => resolvesInside(P.bricks, join(P.bricks, b + ".md"));
 
 function paths(root, cfg = loadConfig(root)) {
   return {
@@ -145,6 +164,13 @@ export function create(skill, { root = process.cwd(), description = "TODO" } = {
   // `---\n...\n---` parser stops at the first bare `---` line) and corrupt the scaffolded recipe.
   if (/[\r\n]/.test(description)) return { ok: false, msg: "--description must not contain a newline" };
   const P = paths(root);
+  // Same pre-flight as its siblings (remove/rename/restore/gc): create was the ONE mutant without
+  // it — it wrote the recipe FIRST and only then had the follow-up run() reject the config, so a
+  // hostile layout (out == bricks, or recipes nested inside bricks) exited 1 yet left the new
+  // recipe on disk — worse, `recipes` inside `bricks` means the write itself landed INSIDE the
+  // bricks tree. Fail closed before touching disk.
+  const overlap = roleOverlapError(root, P.cfg);
+  if (overlap) return { ok: false, msg: overlap };
   const dest = join(P.recipes, skill + ".md");
   if (existsSync(dest)) return { ok: false, msg: `recipe already exists: ${skill}` };
   mkdirSync(P.recipes, { recursive: true });
@@ -241,9 +267,19 @@ export function remove(skill, { root = process.cwd(), hard = false } = {}) {
 
   const includes = uniq(includesOf(readFileSync(recipePath, "utf8")));
   const consumers = brickConsumers(root, P.cfg);
-  // Only consider bricks that resolve inside bricks/ for the move/delete — never act on an
-  // include that escapes the tree (build already rejects it; this protects remove independently).
-  const sweepable = includes.filter((b) => consumers[b] && consumers[b].size === 1 && consumers[b].has(skill) && insideBricks(P, b));
+  // Cross-vendor review HIGH (proven by execution): an EXCLUSIVE brick whose on-disk target is a
+  // DIRECTORY squatting `<name>.md` used to crash remove AFTER the recipe was already deleted —
+  // hard: rmSync (non-recursive) threw a raw ERR_FS_EISDIR mid-sweep; soft: renameSync would have
+  // moved the WHOLE tree into the archive as one "brick". Either way the follow-up build never
+  // ran (recipe gone, state inconsistent). A brick is a FILE: a non-file (or unstatable — fail
+  // closed, same stance as mdFiles) target is simply never swept — it stays on disk untouched,
+  // lands in the Kept bucket below (same reporting path as an insideBricks-failing include, so
+  // the keep is never silent), and remove completes cleanly.
+  const isBrickFile = (b) => { try { return statSync(join(P.bricks, b + ".md")).isFile(); } catch { return false; } };
+  // Only consider bricks that resolve inside bricks/ AND are regular files for the move/delete —
+  // never act on an include that escapes the tree (build already rejects it; this protects
+  // remove independently) or on a non-file squatting the brick path.
+  const sweepable = includes.filter((b) => consumers[b] && consumers[b].size === 1 && consumers[b].has(skill) && insideBricks(P, b) && isBrickFile(b));
   // F-35: a PINNED exclusive brick leaves the sweep entirely — never archived, never deleted,
   // even with --hard. It becomes a pinned orphan afterward, which is coherent: gc's own sweep
   // exempts it for the same reason. fm is read only for the rare sweep CANDIDATES (cheap).
@@ -308,15 +344,26 @@ export function restore(skill, { root = process.cwd() } = {}) {
   const recDest = join(P.recipes, skill + ".md");
   if (existsSync(recDest)) return { ok: false, msg: `conflict: recipe ${skill} already exists (resolve before restoring)` };
 
+  // Same reparse-point exposure as gc's orphan scan (see there): mdFiles descends a junction/
+  // symlinked dir a user may have placed under the archive, so an unguarded loop would (a) count
+  // EXTERNAL files as restore conflicts and (b) `move` them — renameSync THROUGH the junction —
+  // i.e. rip real files out of the user's linked folder into bricks/. Lower risk than gc (the
+  // forge itself never creates links in the archive; one can only appear by hand), but the guard
+  // is the same realpath containment: only entries that RESOLVE inside this skill's archived
+  // bricks dir are conflicts/restorable. The trailing rmSync(recursive) is safe on what's left —
+  // node's fs.rm never traverses a reparse point, it unlinks the junction itself (target
+  // contents untouched; verified by the regression test's checksum).
+  const archBricks = join(dir, "bricks");
+  const restorable = mdFiles(archBricks).filter((rel) => resolvesInside(archBricks, join(archBricks, rel)));
   const conflicts = [];
-  for (const rel of mdFiles(join(dir, "bricks"))) {
+  for (const rel of restorable) {
     if (existsSync(join(P.bricks, rel))) conflicts.push(rel);
   }
   if (conflicts.length) return { ok: false, msg: `conflict: bricks already exist: ${conflicts.join(", ")}` };
 
   move(join(dir, "recipe.md"), recDest);
   const restored = [];
-  for (const rel of mdFiles(join(dir, "bricks"))) { move(join(dir, "bricks", rel), join(P.bricks, rel)); restored.push(rel.replace(/\.md$/, "")); }
+  for (const rel of restorable) { move(join(archBricks, rel), join(P.bricks, rel)); restored.push(rel.replace(/\.md$/, "")); }
   rmSync(dir, { recursive: true, force: true });
 
   const r = run({ root, mode: "build" });
@@ -343,7 +390,15 @@ export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
   // reserving too much defeats gc's job, so we err toward the smaller, unambiguous set.
   const DOC_BASENAMES = /^(readme|changelog|contributing|code_of_conduct|license|licence)$/i;
   const isDoc = (b) => DOC_BASENAMES.test(String(b).split("/").pop());
-  const candidates = mdFiles(P.bricks).map((f) => String(f).replace(/\.md$/, "")).filter((b) => !consumers[b] && !isDoc(b));
+  // CRITICAL (release-readiness bug, proven by execution): mdFiles' readdirSync({recursive})
+  // DESCENDS reparse points — a junction/symlinked DIRECTORY inside bricks/ (e.g. a user linking
+  // a folder of notes in) listed the EXTERNAL files as "orphan bricks", and --apply then
+  // archived/deleted the REAL files THROUGH the junction (hard = permanent data loss outside the
+  // project). Same realpath-containment guard remove() has always had (insideBricks): a path that
+  // does not RESOLVE inside bricks/ is not a governable brick — never listed as an orphan, never
+  // touched, not even reported (it isn't ours to report). Ordered last: realpath runs only on the
+  // rare candidates that survived the cheap consumer/doc filters.
+  const candidates = mdFiles(P.bricks).map((f) => String(f).replace(/\.md$/, "")).filter((b) => !consumers[b] && !isDoc(b) && insideBricks(P, b));
   // F-35: PINNED bricks (`keep: true` in the brick's own fm) leave the orphan set entirely —
   // never archived/deleted, even with --apply --hard. fm is read only for the rare orphan
   // CANDIDATES (never every brick), same cost posture as check()'s F-31 orphan scan.
@@ -393,8 +448,11 @@ export function init(root = process.cwd(), { hooks = true } = {}) {
 
   const cfgPath = join(root, "forge.config.json");
   if (!existsSync(cfgPath)) {
-    const { bricks, recipes, out, archive, deletePolicy, enforceGenerated } = cfg;
-    writeFileSync(cfgPath, JSON.stringify({ bricks, recipes, out, archive, deletePolicy, enforceGenerated }, null, 2) + "\n");
+    // The scaffold spells out EVERY documented config key (SPEC "Config") — `conformance` was
+    // missing, so a fresh project had no visible handle on the SKILL.md gate. `out` survives
+    // as authored (string, never the derived `outs` array) — the round-trip contract.
+    const { bricks, recipes, out, archive, deletePolicy, enforceGenerated, conformance } = cfg;
+    writeFileSync(cfgPath, JSON.stringify({ bricks, recipes, out, archive, deletePolicy, enforceGenerated, conformance }, null, 2) + "\n");
     created.push("forge.config.json");
   }
 
