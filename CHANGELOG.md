@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-07
+
+### Fixed
+- **Package bloat:** the npm tarball ballooned from ~62 kB to ~4.7 MB in 0.7.2 — `package.json`'s
+  `files` listed the whole `assets/` dir, sweeping in the brand PNGs (logo, social card, diagrams)
+  added alongside `assets/onboard/`, the only subfolder actually read at runtime (`onboard
+  --install-skill`). Scoped `files` to `assets/onboard/`; the brand assets stay in the repo for
+  docs/README, just out of the published package.
+
 ## [0.7.2] - 2026-07-07
 
 ### Fixed
