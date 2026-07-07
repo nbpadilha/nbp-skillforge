@@ -5,6 +5,8 @@
 [![license: MIT](https://img.shields.io/npm/l/nbp-skillforge.svg)](LICENSE)
 [![node >=18](https://img.shields.io/node/v/nbp-skillforge.svg)](package.json)
 
+![nbp-skillforge — raw bricks forged into one verified skill](https://raw.githubusercontent.com/nbpadilha/nbp-skillforge/main/assets/social-card.png)
+
 **Your agent's skills are prompts copy-pasted across a dozen files, quietly rotting out of sync. Forge them from shared bricks instead: write a step once, reuse it everywhere, and a gate guarantees nothing ever drifts.**
 
 Once you run more than a couple of agent skills, keeping them consistent by hand stops being possible. The same "set up a run folder", the same closing checklist, the same result contract — pasted everywhere, edited in one place, forgotten in six. `nbp-skillforge` makes a library of agent skills as maintainable as real code: **one source of truth, a deterministic build, and a drift-gate that makes consistency a guarantee instead of a hope.**
@@ -38,6 +40,8 @@ The reason it's safe to try: **you're never locked in, in either direction.**
 ## The idea in one picture
 
 A skill stops being a wall of copied text and becomes a **recipe** that *points* to shared **bricks**. A deterministic build assembles the final file your agent actually reads.
+
+![Pipeline: recipe, then bricks aggregated by forge/build, then SKILL.md, then a verified gate](https://raw.githubusercontent.com/nbpadilha/nbp-skillforge/main/assets/how-it-works-compact.png)
 
 ```
 forge/
