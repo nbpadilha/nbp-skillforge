@@ -917,3 +917,294 @@ test("Fable B9: --from pointing at a FILE is a clean user-facing error, not ENOT
       (e) => e.userFacing === true && /not a directory/.test(e.message));
   } finally { cleanup(root); }
 });
+
+// ═══ --variants: near-dup groups materialize as NAMED VARIANT FAMILIES (onboarded/<slug>_NN) ═
+// Every version is kept VERBATIM (one brick per variant, fidelity gate per skill) — the family
+// is a staging area for the human Fase B unification into ONE {{param}} brick, never a merge.
+const DEP = (cluster) => `Deploy checklist for the run:\nTarget the ${cluster} cluster.\nConfirm the version tag.`;
+const depSkill = (name, cluster) => `---\nname: ${name}\ndescription: d.\n---\n# ${name}\n\n${DEP(cluster)}\n`;
+const VSLUG = "deploy-checklist-for-the-run";
+const vBrick = (root, nn) => join(root, "bricks", "onboarded", `${VSLUG}_${nn}.md`);
+
+test("variants: 3 divergent versions → bricks _01.._03 in report order, swaps + round-trip byte-identical", () => {
+  const root = makeRoot({});
+  const a = depSkill("aa", "ALPHA"), b = depSkill("bb", "BRAVO"), c = depSkill("cc", "CHARLIE");
+  write(join(root, "out", "aa.md"), a);
+  write(join(root, "out", "bb.md"), b);
+  write(join(root, "out", "cc.md"), c);
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true, variants: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.factoring.factored.length, 0, "nothing byte-identical — the identical passes stay empty");
+    // --json additive surface: one group, three variant bricks, NN in the report's variant order
+    assert.equal(r.factoring.variants.length, 1);
+    const v = r.factoring.variants[0];
+    assert.equal(v.group, VSLUG);
+    assert.equal(v.firstLine, "Deploy checklist for the run:");
+    assert.deepEqual(v.bricks.map((x) => x.brick), [`onboarded/${VSLUG}_01`, `onboarded/${VSLUG}_02`, `onboarded/${VSLUG}_03`]);
+    assert.deepEqual(v.bricks.map((x) => x.skills), [["aa"], ["bb"], ["cc"]]);
+    // brick = advisory fm (dropped at build) + the variant body VERBATIM
+    assert.equal(read(vBrick(root, "01")),
+      `---\npiece: ${VSLUG}_01\nvariant-group: ${VSLUG}\nsummary: variant 01 of a near-identical family — all variants kept verbatim; candidates for ONE {{param}} brick (see the onboard report / Fase B)\n---\n${DEP("ALPHA")}\n`);
+    // each recipe carries the plain directive (outside a fence, no indent)
+    assert.match(read(recipe(root, "aa")), new RegExp(`^<!-- include: onboarded/${VSLUG}_01 -->$`, "m"));
+    assert.match(read(recipe(root, "cc")), new RegExp(`^<!-- include: onboarded/${VSLUG}_03 -->$`, "m"));
+    // fidelity: round trip byte-identical for all three (git-diff-empty promise holds)
+    assert.equal(sansBanner(root, "aa"), a);
+    assert.equal(sansBanner(root, "bb"), b);
+    assert.equal(sansBanner(root, "cc"), c);
+    assert.equal(run({ root, mode: "check" }).ok, true);
+    // report: the group gains its materialization line; the {{param}} suggestion still renders
+    const report = read(join(root, "_onboard-backup-" + TS, "onboard-report.md"));
+    assert.ok(report.includes(`- materialized as: ${VSLUG}_01 (aa), ${VSLUG}_02 (bb), ${VSLUG}_03 (cc) — unify into one {{param}} brick in Fase B (forge-onboard)`), "materialized line present");
+    assert.match(report, /suggested `\{\{param1\}\}` line/);
+    // CLI msg: the variant clause is appended only because N > 0 — and the near-dup clause must
+    // not contradict it (review FIX 3: no "report-only" claim next to "materialized")
+    assert.match(r.msg, /1 variant group\(s\) materialized \(3 variant brick\(s\)\)/);
+    assert.match(r.msg, /1 near-duplicate group\(s\) found \(see the report\)/);
+    assert.ok(!r.msg.includes("report-only"), "the report-only claim never coexists with a materialization");
+  } finally { cleanup(root); }
+});
+
+test("variants: a variant SHARED by 2 skills → ONE brick with both consumers (never the sha8 path)", () => {
+  const root = makeRoot({});
+  write(join(root, "out", "p1.md"), depSkill("p1", "ALPHA"));
+  write(join(root, "out", "p2.md"), depSkill("p2", "ALPHA"));
+  write(join(root, "out", "p3.md"), depSkill("p3", "BRAVO"));
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true, variants: true });
+    assert.equal(r.ok, true, r.msg);
+    // the p1+p2 byte-identical pair belongs to the FAMILY, not to the identical block pass
+    assert.equal(r.factoring.factored.length, 0, "the shared variant is claimed by the family, not sha8-factored");
+    const v = r.factoring.variants[0];
+    assert.deepEqual(v.bricks, [
+      { brick: `onboarded/${VSLUG}_01`, skills: ["p1", "p2"] },
+      { brick: `onboarded/${VSLUG}_02`, skills: ["p3"] },
+    ]);
+    // every brick on disk is a family member — no sha8-named brick was minted
+    assert.ok(readdirSync(join(root, "bricks", "onboarded")).every((f) => /_\d{2}\.md$/.test(f)), "no sha8 brick");
+    assert.equal(sansBanner(root, "p1"), depSkill("p1", "ALPHA"));
+    assert.equal(sansBanner(root, "p3"), depSkill("p3", "BRAVO"));
+    assert.equal(run({ root, mode: "check" }).ok, true);
+  } finally { cleanup(root); }
+});
+
+test("variants regression: WITHOUT --variants nothing materializes and the report keeps today's shape", () => {
+  const root = makeRoot({});
+  write(join(root, "out", "aa.md"), depSkill("aa", "ALPHA"));
+  write(join(root, "out", "bb.md"), depSkill("bb", "BRAVO"));
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.deepEqual(r.factoring.variants, [], "the --json key exists under --factor, empty without --variants");
+    assert.equal(has(join(root, "bricks", "onboarded")), false, "no brick dir — nothing materialized");
+    const report = read(join(root, "_onboard-backup-" + TS, "onboard-report.md"));
+    assert.match(report, /## near-duplicates \(report-only — candidates for a \{\{param\}\} brick\)/, "pre-variants header intact");
+    assert.match(report, /Nothing was written for these/, "pre-variants intro intact");
+    assert.ok(!report.includes("materialized as:"), "no materialization line without the flag");
+    assert.ok(!r.msg.includes("variant group(s) materialized"), "CLI msg untouched without the flag");
+    // review FIX 3 regression: with nothing materialized the near-dup clause is byte-identical
+    assert.ok(r.msg.includes("; 1 near-duplicate group(s) reported (report-only — see the report)"), "pre-variants clause intact");
+  } finally { cleanup(root); }
+});
+
+test("variants: a family INSIDE a code fence materializes via include!:, round-trip byte-identical", () => {
+  const root = makeRoot({});
+  const F = (x) => "```\ndeploy sequence starts\nstep " + x + "\nfinish up\n```";
+  const one = `---\nname: one\ndescription: d.\n---\n# one\n\nIntro one.\n\n${F("ALPHA")}\n`;
+  const two = `---\nname: two\ndescription: d.\n---\n# two\n\nIntro two.\n\n${F("BRAVO")}\n`;
+  write(join(root, "out", "one.md"), one);
+  write(join(root, "out", "two.md"), two);
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true, variants: true });
+    assert.equal(r.ok, true, r.msg);
+    const v = r.factoring.variants[0];
+    assert.equal(v.group, "deploy-sequence-starts");
+    // inside the fence only the F-33 bang form expands — the swap must use it
+    assert.match(read(recipe(root, "one")), /^<!-- include!: onboarded\/deploy-sequence-starts_01 -->$/m);
+    assert.ok(!read(recipe(root, "one")).includes("<!-- include: "), "no bang-less directive planted in the fence");
+    // brick body verbatim (fence markers stay in the recipe, never in the brick)
+    assert.ok(read(join(root, "bricks", "onboarded", "deploy-sequence-starts_01.md")).endsWith("---\ndeploy sequence starts\nstep ALPHA\nfinish up\n"));
+    assert.equal(sansBanner(root, "one"), one, "byte-identical round trip through the fenced variant");
+    assert.equal(sansBanner(root, "two"), two);
+    assert.equal(run({ root, mode: "check" }).ok, true);
+    assert.equal(gc(root, {}).orphans.length, 0, "bang-in-fence consumption keeps the family off the orphan list");
+  } finally { cleanup(root); }
+});
+
+test("variants cross-batch: a later batch REUSES a byte-identical member; a divergent one extends the family", () => {
+  const root = makeRoot({});
+  write(join(root, "out", "aa.md"), depSkill("aa", "ALPHA"));
+  write(join(root, "out", "bb.md"), depSkill("bb", "BRAVO"));
+  try {
+    const r1 = onboard({ root, ts: TS, apply: true, factor: true, variants: true });
+    assert.equal(r1.ok, true, r1.msg);
+    assert.equal(has(vBrick(root, "01")) && has(vBrick(root, "02")), true, "family seeded: _01 + _02");
+    // batch 2: ONE new skill, byte-identical to the _01 variant — alone it could never form a
+    // near-dup group; the on-disk family is what makes it a variant case (adoption + reuse).
+    const cc = depSkill("cc", "ALPHA");
+    write(join(root, "out", "cc.md"), cc);
+    const r2 = onboard({ root, ts: TS + "-b", apply: true, factor: true, variants: true });
+    assert.equal(r2.ok, true, r2.msg);
+    assert.equal(r2.factoring.variants.length, 1);
+    assert.deepEqual(r2.factoring.variants[0].bricks, [{ brick: `onboarded/${VSLUG}_01`, skills: ["aa", "cc"] }],
+      "reused member reported with the WHOLE family membership (old consumer included)");
+    assert.equal(has(vBrick(root, "03")), false, "no new member for a byte-identical variant");
+    assert.match(read(recipe(root, "cc")), new RegExp(`^<!-- include: onboarded/${VSLUG}_01 -->$`, "m"));
+    assert.equal(sansBanner(root, "cc"), cc);
+    // the report surfaces the cross-batch join even though no in-batch near-dup group exists
+    const report2 = read(join(root, `_onboard-backup-${TS}-b`, "onboard-report.md"));
+    assert.match(report2, /cross-batch: joined an existing variant family/);
+    assert.ok(report2.includes(`materialized as: ${VSLUG}_01 (aa, cc)`));
+    // batch 3: a DIVERGENT variant grows the family at the next free NN
+    const dd = depSkill("dd", "DELTA");
+    write(join(root, "out", "dd.md"), dd);
+    const r3 = onboard({ root, ts: TS + "-c", apply: true, factor: true, variants: true });
+    assert.equal(r3.ok, true, r3.msg);
+    assert.deepEqual(r3.factoring.variants[0].bricks, [{ brick: `onboarded/${VSLUG}_03`, skills: ["dd"] }]);
+    assert.ok(read(vBrick(root, "03")).endsWith(`---\n${DEP("DELTA")}\n`), "new member is the divergent variant verbatim");
+    assert.equal(sansBanner(root, "dd"), dd);
+    assert.equal(run({ root, mode: "check" }).ok, true);
+  } finally { cleanup(root); }
+});
+
+test("variants: --variants without --factor is a usage error; dry-run announces the --apply dependency", () => {
+  const root = makeRoot({});
+  write(join(root, "out", "x.md"), "---\nname: x\ndescription: d.\n---\n# x\nbody\n");
+  try {
+    const r = onboard({ root, ts: TS, apply: true, variants: true }); // no --factor
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /--variants requires --factor/);
+    assert.equal(has(join(root, "_onboard-backup-" + TS)), false, "usage error before any write");
+    const dry = onboard({ root, ts: TS, factor: true, variants: true }); // no --apply
+    assert.equal(dry.ok, true, dry.msg);
+    assert.match(dry.msg, /--variants takes effect together with --apply/);
+    assert.match(dry.msg, /--factor takes effect together with --apply/, "the --factor mention survives alongside");
+  } finally { cleanup(root); }
+});
+
+test("variants: a gate mismatch reverts ONLY that skill; its consumer-less brick is dropped, run stays ok", () => {
+  const root = makeRoot({});
+  // trailing spaces on the LAST variant line + content after it: compose emits b.trim(), so the
+  // factored round trip drops them mid-file → gate mismatch for `one` only; `two` stays factored.
+  const one = `---\nname: one\ndescription: d.\n---\n# one\n\nshared first line here.\nvariant ONE middle.\nlast line.   \n\nOne tail.\n`;
+  const two = `---\nname: two\ndescription: d.\n---\n# two\n\nshared first line here.\nvariant TWO middle.\nlast line.\n\nTwo tail.\n`;
+  write(join(root, "out", "one.md"), one);
+  write(join(root, "out", "two.md"), two);
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true, variants: true });
+    assert.equal(r.ok, true, "the variants pass never fails the onboard");
+    assert.deepEqual(r.factoring.kept, ["one"], "the mismatching skill self-reverted");
+    assert.ok(!read(recipe(root, "one")).includes("<!-- include"), "reverted recipe is verbatim again");
+    assert.match(read(recipe(root, "two")), /^<!-- include: onboarded\/shared-first-line-here_02 -->$/m);
+    assert.equal(has(join(root, "bricks", "onboarded", "shared-first-line-here_01.md")), false, "consumer-less variant brick dropped");
+    assert.equal(has(join(root, "bricks", "onboarded", "shared-first-line-here_02.md")), true);
+    assert.deepEqual(r.factoring.variants, [{
+      group: "shared-first-line-here", firstLine: "shared first line here.",
+      bricks: [{ brick: "onboarded/shared-first-line-here_02", skills: ["two"] }],
+    }], "post-gate reality: only the surviving variant is reported");
+    assert.match(r.msg, /1 variant group\(s\) materialized \(1 variant brick\(s\)\)/);
+    assert.equal(sansBanner(root, "one"), one, "reverted skill reproduces its original bytes");
+    assert.equal(sansBanner(root, "two"), two);
+    assert.equal(run({ root, mode: "check" }).ok, true);
+  } finally { cleanup(root); }
+});
+
+// ═══ --variants dual-review regression fixes (codex + agy, adjudicated by execution) ═════════
+// FIX 1: a shared variant that is a WHOLE heading-section (no blank lines → byte-identical
+// section core AND sub-block at once) used to be stolen by the section pass: the shared members
+// landed at the sha8 path while the divergent one became <slug>_01 — a split family.
+test("variants review-fix: a whole-section shared variant stays ONE family (section pass never splits it)", () => {
+  const mk = (n, x) => `---\nname: ${n}\ndescription: d.\n---\n# ${n}\n\n### deploy\ndeploy sequence starts\nstep ${x}\nfinish up\n`;
+  const root = makeRoot({});
+  const one = mk("one", "ALPHA"), two = mk("two", "ALPHA"), three = mk("three", "BRAVO");
+  write(join(root, "out", "one.md"), one);
+  write(join(root, "out", "two.md"), two);
+  write(join(root, "out", "three.md"), three);
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true, variants: true });
+    assert.equal(r.ok, true, r.msg);
+    // the one+two byte-identical SECTION belongs to the family — never to the sha8 section pass
+    assert.equal(r.factoring.factored.length, 0, "no sha8 brick steals the shared variant");
+    assert.deepEqual(r.factoring.variants[0].bricks, [
+      { brick: "onboarded/deploy_01", skills: ["one", "two"] },
+      { brick: "onboarded/deploy_02", skills: ["three"] },
+    ], "whole family together: _01 shared by one+two, _02 for the divergent three");
+    assert.deepEqual(readdirSync(join(root, "bricks", "onboarded")).sort(), ["deploy_01.md", "deploy_02.md"], "family members only — no sha8 file on disk");
+    assert.equal(sansBanner(root, "one"), one);
+    assert.equal(sansBanner(root, "three"), three);
+    assert.equal(run({ root, mode: "check" }).ok, true);
+    // and WITHOUT --variants the identical section still factors at the sha8 path (regression):
+    const root2 = makeRoot({});
+    write(join(root2, "out", "one.md"), one);
+    write(join(root2, "out", "two.md"), two);
+    write(join(root2, "out", "three.md"), three);
+    const r2 = onboard({ root: root2, ts: TS, apply: true, factor: true });
+    assert.equal(r2.factoring.factored.length, 1, "sha8 section factoring intact without the flag");
+    assert.match(r2.factoring.factored[0].brick, /^onboarded\/deploy-[0-9a-f]{8}$/);
+    assert.deepEqual(r2.factoring.factored[0].usedBy, ["one", "two"]);
+    cleanup(root2);
+  } finally { cleanup(root); }
+});
+
+// FIX 2 fixtures: a 3-line block whose first line slugs to "deploy" — the family namespace the
+// occupied-slot tests squat. (Divergent bodies → a near-dup group of two variants.)
+const slotSkill = (n, x) => `---\nname: ${n}\ndescription: d.\n---\n# ${n}\n\ndeploy\nstep ${x}\nfinish up\n`;
+
+test("variants review-fix: an occupied slot (same case, divergent body) is NEVER overwritten — family shifts to _02/_03", () => {
+  const root = makeRoot({});
+  write(join(root, "out", "one.md"), slotSkill("one", "ALPHA"));
+  write(join(root, "out", "two.md"), slotSkill("two", "BRAVO"));
+  const USER = "USER BRICK — do not clobber\n";
+  write(join(root, "bricks", "onboarded", "deploy_01.md"), USER); // squat the first slot
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true, variants: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(read(join(root, "bricks", "onboarded", "deploy_01.md")), USER, "the user's brick survives byte-for-byte");
+    assert.deepEqual(r.factoring.variants[0].bricks, [
+      { brick: "onboarded/deploy_02", skills: ["one"] },
+      { brick: "onboarded/deploy_03", skills: ["two"] },
+    ], "the family allocates around the occupied slot");
+    assert.equal(sansBanner(root, "one"), slotSkill("one", "ALPHA"));
+    assert.equal(run({ root, mode: "check" }).ok, true);
+  } finally { cleanup(root); }
+});
+
+// FIX 2, the DESTRUCTIVE case (proven by execution on NTFS): a differently-cased occupant
+// (Deploy_01.md) is invisible to the exact-case member parse, but on a case-insensitive
+// filesystem writeFileSync(deploy_01.md) resolves to the SAME file — the old code overwrote it,
+// the gate then failed on the engine's include case-match, and the consumer-less cleanup DELETED
+// the user's file. The fix scans for a free slot with existsSync on the exact candidate path
+// (which case-folds with the filesystem) and never reuses a member whose on-disk case diverges.
+const CASE_INSENSITIVE_TMP = (() => {
+  const d = makeRoot({});
+  try {
+    writeFileSync(join(d, "case-probe.txt"), "x");
+    return existsSync(join(d, "CASE-PROBE.TXT"));
+  } finally { cleanup(d); }
+})();
+test("variants review-fix: a differently-CASED occupant survives intact and is never reused (case-insensitive FS)", { skip: !CASE_INSENSITIVE_TMP }, () => {
+  const root = makeRoot({});
+  write(join(root, "out", "one.md"), slotSkill("one", "ALPHA"));
+  write(join(root, "out", "two.md"), slotSkill("two", "BRAVO"));
+  // body byte-identical to the ALPHA variant on purpose: even then it must NOT be reused (the
+  // engine's include case-match would reject Deploy_01 for a deploy_01 directive at build).
+  const USER = `---\nuser: brick\n---\ndeploy\nstep ALPHA\nfinish up\n`;
+  write(join(root, "bricks", "onboarded", "Deploy_01.md"), USER);
+  try {
+    const r = onboard({ root, ts: TS, apply: true, factor: true, variants: true });
+    assert.equal(r.ok, true, r.msg);
+    // the user's file: same on-disk NAME (exact case) and same bytes — never overwritten/deleted
+    const listing = readdirSync(join(root, "bricks", "onboarded")).sort();
+    assert.deepEqual(listing, ["Deploy_01.md", "deploy_02.md", "deploy_03.md"], "occupant intact, family allocated around it");
+    assert.equal(read(join(root, "bricks", "onboarded", "Deploy_01.md")), USER, "user bytes survive");
+    assert.deepEqual(r.factoring.variants[0].bricks, [
+      { brick: "onboarded/deploy_02", skills: ["one"] },
+      { brick: "onboarded/deploy_03", skills: ["two"] },
+    ], "the byte-identical but wrong-case occupant was not reused");
+    assert.deepEqual(r.factoring.kept, [], "no gate casualty — every include case-matches its brick");
+    assert.equal(sansBanner(root, "one"), slotSkill("one", "ALPHA"));
+    assert.equal(sansBanner(root, "two"), slotSkill("two", "BRAVO"));
+    assert.equal(run({ root, mode: "check" }).ok, true);
+  } finally { cleanup(root); }
+});

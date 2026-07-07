@@ -304,7 +304,7 @@ const blockEligible = (text, lineCount) => {
 // section/fence and factor the wrong spot — byte-faithful to the gate, structurally wrong.
 // Segment cores (sections and blocks alike) are disjoint line ranges by construction; applying
 // them bottom-up per skill keeps every index valid with no re-scan.
-function factorPass({ root, cfg, imported, backupDir }) {
+function factorPass({ root, cfg, imported, backupDir, variants = false }) {
   const recipes = new Map(); // skill → { fm, body, verbatim }
   for (const e of imported) {
     // These recipes were created by THIS run's importFile — LF/BOM-normalized by construction.
@@ -366,6 +366,55 @@ function factorPass({ root, cfg, imported, backupDir }) {
   }
   nearDups.sort((a, b) => cmp(a.slug, b.slug) || cmp(a.firstLine, b.firstLine));
 
+  // ── --variants: choose which groups MATERIALIZE as named variant families ──────────────────
+  // The unit is the near-dup group above. ADDITIONALLY, a first line whose slug already owns an
+  // on-disk family (`onboarded/<slug>_NN.md`) is adopted even when THIS batch alone could never
+  // form a group: a single new skill arriving in a later batch must still join the existing
+  // family (earlier recipes carry includes, not raw text, so cross-batch membership is only
+  // visible through the family bricks — the same stance as ensureBrick's cross-batch reuse).
+  // The family NAMESPACE key is the slug alone: two groups that slugify to the same base share
+  // one NN sequence (familyMembers is re-read per group, so a member written for an earlier
+  // same-slug group this run is already visible/taken for the next).
+  const VARIANT_FILE_RE = /^(.*)_(\d{2,})\.md$/; // zero-pad 2 digits; ≥100 grows naturally unpadded
+  const familyDirAbs = join(root, cfg.bricks, "onboarded");
+  const familyMembers = (slug) => {
+    if (!existsSync(familyDirAbs)) return [];
+    const members = [];
+    for (const f of readdirSync(familyDirAbs)) {
+      const m = f.match(VARIANT_FILE_RE);
+      if (!m || m[1] !== slug) continue;
+      // An unreadable member (dir squatting the name, perms) carries a body that can never match
+      // (no reuse) — its slot stays occupied via the allocation's existsSync scan, so the family
+      // simply allocates elsewhere; nothing here ever throws the run away.
+      let body = null;
+      try { body = splitFm(readFileSync(join(familyDirAbs, f), "utf8").replace(/\r\n?/g, "\n")).body; } catch {}
+      members.push({ nn: Number(m[2]), name: `onboarded/${basename(f, ".md")}`, body });
+    }
+    return members;
+  };
+  let vGroups = [];
+  if (variants) {
+    vGroups = [...nearDups];
+    for (const [firstLine, byText] of nearDupIndex) {
+      const slug = slugHead(firstLine);
+      if (nearDups.some((g) => g.slug === slug && g.firstLine === firstLine)) continue;
+      if (!familyMembers(slug).length) continue; // no on-disk family to join → not a variant case
+      const skills = new Set();
+      for (const who of byText.values()) for (const s of who) skills.add(s);
+      const vs = [...byText.entries()]
+        .map(([text, who]) => ({ skills: [...who].sort(cmp), lines: text.split("\n") }))
+        .sort((a, b) => cmp(a.lines.join("\n"), b.lines.join("\n")));
+      vGroups.push({ slug, firstLine, skills: [...skills].sort(cmp), variants: vs });
+    }
+    vGroups.sort((a, b) => cmp(a.slug, b.slug) || cmp(a.firstLine, b.firstLine));
+  }
+  // Every variant text is CLAIMED by the materialization pass: NEITHER identical pass (section
+  // or block) may grab a variant shared by ≥2 skills first — it would land at the sha8 path and
+  // split the family (dual-review, confirmed by execution: a shared variant that is a WHOLE
+  // heading-section with no blank lines is a byte-identical section core AND sub-block at once,
+  // and the section pass runs first) — and a double swap of one range would corrupt coordinates.
+  const variantTexts = new Set(vGroups.flatMap((g) => g.variants.map((v) => v.lines.join("\n"))));
+
   // Pass 2 — write bricks. Collision guard (dual-review): a pre-existing file at the computed
   // path is REUSED when byte-identical (idempotent re-run) and SKIPS the group otherwise (never
   // clobber a user brick; sha8 is 32 bits — cheap paranoia). Any write error also just skips the
@@ -401,6 +450,11 @@ function factorPass({ root, cfg, imported, backupDir }) {
   const replacements = new Map(); // skill → [{coreStart, coreEnd, line}]
   const addRep = (skill, rep) => (replacements.get(skill) ?? replacements.set(skill, []).get(skill)).push(rep);
   for (const [text, g] of groups) {
+    // The family claim covers the SECTION pass too (review FIX, found by both vendors and proven
+    // by execution): a shared whole-section variant used to be sha8-factored here while the
+    // divergent copy became <slug>_01 — a split family Fase B cannot unify. Without --variants,
+    // variantTexts is empty and the sha8 section factoring stays byte-identical to today.
+    if (variantTexts.has(text)) continue; // claimed by the --variants materialization (pass 2c)
     const brickRel = ensureBrick(text, slugHead(g.heading), g.occ.size);
     if (!brickRel) continue;
     for (const [skill, occs] of g.occ)
@@ -416,6 +470,7 @@ function factorPass({ root, cfg, imported, backupDir }) {
   for (const [skill, subs] of skillBlocks) {
     const reps = replacements.get(skill) ?? [];
     for (const sb of subs) {
+      if (variantTexts.has(sb.text)) continue; // claimed by the --variants materialization below
       if (reps.some((rp) => sb.start < rp.coreEnd && sb.end > rp.coreStart)) continue;
       const occ = blockGroups.get(sb.text) ?? new Map();
       (occ.get(skill) ?? occ.set(skill, []).get(skill)).push(sb);
@@ -438,6 +493,70 @@ function factorPass({ root, cfg, imported, backupDir }) {
         addRep(skill, { coreStart: o.start, coreEnd: o.end, line: `${indent}<!-- include${o.fenced ? "!" : ""}: ${brickRel} -->` });
   }
 
+  // Pass 2c — --variants materialization: ONE brick per VARIANT, named onboarded/<slug>_NN in
+  // the report's deterministic variant order (body text, code-unit). Every version is kept
+  // VERBATIM — the family is a staging area for the human Fase B unification, never a merge.
+  // Same safety story as the passes above: the swap is by segment coordinates, the round-trip
+  // gate judges every touched skill, and a failure degrades PER GROUP (never fails the run).
+  const vCreated = [];    // variant bricks THIS RUN wrote (deletable when consumer-less)
+  const variantRecs = []; // committed groups, pre-gate: [{ group, firstLine, bricks: [name] }]
+  for (const g of vGroups) {
+    const members = familyMembers(g.slug); // fresh read: same-slug groups share the NN namespace
+    const plan = []; // per-variant swap plan, committed only when the WHOLE group resolves
+    let failed = false;
+    for (const v of g.variants) {
+      const text = v.lines.join("\n");
+      // Every occurrence of this variant in each of its skills — minus any overlapping a
+      // replacement already planned (its whole section factored: those lines are being spliced
+      // away, so swapping inside them would corrupt coordinates). Sub-blocks are disjoint per
+      // skill, so variant occurrences can never collide with the block pass or with each other.
+      const occs = [];
+      for (const skill of v.skills) {
+        const reps = replacements.get(skill) ?? [];
+        for (const sb of skillBlocks.get(skill))
+          if (sb.text === text && !reps.some((rp) => sb.start < rp.coreEnd && sb.end > rp.coreStart)) occs.push({ skill, ...sb });
+      }
+      if (!occs.length) continue; // the variant was wholly absorbed by the section pass
+      // Reuse: ONLY an EXACT-CASE on-disk member (familyMembers keys on the exact readdir name,
+      // so a Deploy_01.md never qualifies for the deploy family — the engine's include
+      // case-match would reject that path at build anyway) whose body is byte-identical (any NN
+      // — the report order of a LATER batch need not match the on-disk order of an earlier one);
+      // otherwise the first FREE NN gets a new member (divergent occupants are walked past — the
+      // family grows across batches: deploy_04, …).
+      let name = members.find((m) => m.body === text + "\n")?.name;
+      if (!name) {
+        // Free-slot scan by EXISTENCE at the exact candidate path (review FIX 2, destruction
+        // proven by execution on NTFS): a differently-cased occupant (Deploy_01.md) is invisible
+        // to the exact-case member parse above, but on a case-insensitive filesystem
+        // existsSync(deploy_01.md) still finds it — the old taken-set scan considered NN 1 free,
+        // writeFileSync OVERWROTE the user's file, the gate then failed on the engine's include
+        // case-match, and the consumer-less cleanup DELETED it. An occupied slot — any case, any
+        // content — is NEVER written over: the scan moves to the next free NN, which also makes
+        // vCreated hold only paths this run created from scratch (the delete-guard invariant the
+        // cleanup below relies on).
+        let nn = 0, piece;
+        do { piece = `${g.slug}_${String(++nn).padStart(2, "0")}`; }
+        while (existsSync(join(familyDirAbs, piece + ".md")));
+        name = `onboarded/${piece}`;
+        // fm is ADVISORY (compose drops brick frontmatter at build, so the round trip only ever
+        // sees the verbatim body): it names the piece, its family, and the Fase B intent.
+        const fmB = `piece: ${piece}\nvariant-group: ${g.slug}\nsummary: variant ${String(nn).padStart(2, "0")} of a near-identical family — all variants kept verbatim; candidates for ONE {{param}} brick (see the onboard report / Fase B)`;
+        try {
+          mkdirSync(familyDirAbs, { recursive: true });
+          writeFileSync(join(root, cfg.bricks, name + ".md"), `---\n${fmB}\n---\n${text}\n`);
+        } catch { failed = true; break; } // unwritable state → this group stays verbatim
+        vCreated.push(name);
+        members.push({ nn, name, body: text + "\n" }); // visible to this group's next variant
+      }
+      plan.push({ brick: name, indent: /^[ \t]*/.exec(text)[0], occs });
+    }
+    if (failed || !plan.length) continue; // degrade per group; an orphan write is swept below
+    for (const p of plan)
+      for (const o of p.occs)
+        addRep(o.skill, { coreStart: o.start, coreEnd: o.end, line: `${p.indent}<!-- include${o.fenced ? "!" : ""}: ${p.brick} -->` });
+    variantRecs.push({ group: g.slug, firstLine: g.firstLine, bricks: plan.map((p) => p.brick) });
+  }
+
   // Pass 3 — apply per skill, bottom-up (section and block ranges are disjoint by construction;
   // descending order keeps every earlier index valid). One write per touched skill.
   const touched = new Set();
@@ -451,7 +570,12 @@ function factorPass({ root, cfg, imported, backupDir }) {
     writeFileSync(join(root, cfg.recipes, skill + ".md"), r.fm === null ? r.body : `---\n${r.fm}${r.fm ? "\n" : ""}---\n${r.body}`);
     touched.add(skill);
   }
-  if (!touched.size) return { factored: [], kept: [], nearDups };
+  if (!touched.size) {
+    // A group that failed mid-write (or whose swaps were all absorbed) may have left this-run
+    // variant bricks behind with no possible consumer — sweep them before returning.
+    for (const b of vCreated) rmSync(join(root, cfg.bricks, b + ".md"), { force: true });
+    return { factored: [], kept: [], nearDups, variants: [] };
+  }
 
   // Rebuild + gate every touched skill; revert the ones that fail (never fail the run).
   // A build-level failure reverts EVERY touched skill — deliberately global: a broken factored
@@ -482,7 +606,21 @@ function factorPass({ root, cfg, imported, backupDir }) {
   for (const brick of reused) {
     if (consumers[brick]?.size) factored.push({ brick, usedBy: [...consumers[brick]].sort(), reused: true });
   }
-  return { factored, kept, nearDups };
+  // Variant bricks mirror the created/reused policy above: a this-run brick nobody consumes (its
+  // group failed, or its only skill self-reverted at the gate) is dropped; a reused pre-existing
+  // family member is the earlier batches' — reported when consumed, never deleted here. `skills`
+  // comes from the live consumer map, so a reused member lists its OLD consumers too (the whole
+  // family membership is what the Fase B human needs to see).
+  const variantsOut = [];
+  for (const rec of variantRecs) {
+    const bricks = [];
+    for (const name of rec.bricks)
+      if (consumers[name]?.size) bricks.push({ brick: name, skills: [...consumers[name]].sort() });
+    if (bricks.length) variantsOut.push({ group: rec.group, firstLine: rec.firstLine, bricks });
+  }
+  for (const name of vCreated)
+    if (!consumers[name]?.size) rmSync(join(root, cfg.bricks, name + ".md"), { force: true });
+  return { factored, kept, nearDups, variants: variantsOut };
 }
 
 // ── F-34(b): near-duplicate report rendering (pure — report-only, never a write) ─────────────
@@ -502,8 +640,13 @@ const suggestParamLine = (texts, n) => {
 // prefixed by the skills that carry it. Line 0 (the group key) is identical by construction and
 // never listed. A position where some variant has no line gets "(no such line)" and NO param
 // suggestion (a single-line {{param}} cannot absorb a structural difference).
-function renderNearDup(g) {
+// The `materialized as:` line a group gains under --variants — short brick names (the family is
+// always onboarded/…) with each variant's consumers, and the Fase B instruction spelled out.
+const materializedLine = (v) =>
+  `- materialized as: ${v.bricks.map((b) => `${b.brick.replace(/^onboarded\//, "")} (${b.skills.join(", ")})`).join(", ")} — unify into one {{param}} brick in Fase B (forge-onboard)`;
+function renderNearDup(g, mat) {
   const out = [`### ${g.slug} — first line: \`${g.firstLine}\``, ``, `- skills: ${g.skills.join(", ")}`];
+  if (mat) out.push(materializedLine(mat)); // --variants: the family this group became
   const maxLen = Math.max(...g.variants.map((v) => v.lines.length));
   let param = 0;
   for (let i = 1; i < maxLen; i++) {
@@ -546,16 +689,38 @@ function writeReport(backupDir, { discRel, entries, gate, applied, enforce, fact
         : [`No byte-identical shared block (≥3 lines, no {{param}}) was found across two or more skills.`]),
       ...(factoring.kept.length ? [``, `Kept **verbatim** (factored round-trip failed its gate and was reverted): ${factoring.kept.join(", ")}.`] : []),
       ``,
-      // F-34(b): report-only — these groups changed NOTHING on disk (no brick, no recipe swap).
-      `## near-duplicates (report-only — candidates for a {{param}} brick)`,
-      ``,
-      ...(factoring.nearDups.length
-        ? [
-            `${factoring.nearDups.length} group(s) share a byte-identical first line across skills but diverge in the body. Nothing was written for these — they are Fase B candidates: extract a {{param}} brick by hand (via forge-onboard) if the variation is a real parameter.`,
+      // F-34(b): without --variants these groups changed NOTHING on disk (report-only). With
+      // --variants each group carries a `materialized as:` line naming its variant family; the
+      // no-variants rendering below stays byte-identical to the pre-variants report (regression).
+      ...(() => {
+        const vList = factoring.variants ?? [];
+        const vFor = (g) => vList.find((v) => v.group === g.slug && v.firstLine === g.firstLine);
+        // A materialized family with NO near-dup group in THIS batch is a cross-batch join (a
+        // single new skill matched an on-disk family) — rendered as its own compact entry, or the
+        // materialization would be invisible in the report.
+        const crossBatch = vList.filter((v) => !factoring.nearDups.some((g) => g.slug === v.group && g.firstLine === v.firstLine));
+        return [
+          vList.length
+            ? `## near-duplicates (materialized as variant families — unify each into ONE {{param}} brick in Fase B)`
+            : `## near-duplicates (report-only — candidates for a {{param}} brick)`,
+          ``,
+          ...(factoring.nearDups.length
+            ? [
+                vList.length
+                  ? `${factoring.nearDups.length} group(s) share a byte-identical first line across skills but diverge in the body. --variants materialized each group below (see its \`materialized as:\` line) as a NAMED VARIANT FAMILY — every version kept verbatim as its own brick; unify each family into ONE {{param}} brick in Fase B (forge-onboard).`
+                  : `${factoring.nearDups.length} group(s) share a byte-identical first line across skills but diverge in the body. Nothing was written for these — they are Fase B candidates: extract a {{param}} brick by hand (via forge-onboard) if the variation is a real parameter.`,
+                ``,
+                ...factoring.nearDups.flatMap((g) => renderNearDup(g, vFor(g))),
+              ]
+            : [`No near-duplicate block group (same first line in ≥2 skills, diverging body) was found.`, ``]),
+          ...crossBatch.flatMap((v) => [
+            `### ${v.group} — first line: \`${v.firstLine}\` (cross-batch: joined an existing variant family)`,
             ``,
-            ...factoring.nearDups.flatMap(renderNearDup),
-          ]
-        : [`No near-duplicate block group (same first line in ≥2 skills, diverging body) was found.`, ``]),
+            materializedLine(v),
+            ``,
+          ]),
+        ];
+      })(),
     ] : []),
     ...(enforce ? [`## enforceGenerated`, ``, enforce, ``] : []),
   ].join("\n");
@@ -606,7 +771,10 @@ export function installSkill({ root = process.cwd(), cfg = loadConfig(root) } = 
 }
 
 // ── onboard: the orchestrator. `ts` is ALWAYS injected by the caller (P2 — determinism). ─────
-export function onboard({ root = process.cwd(), ts, apply = false, from, factor = false } = {}) {
+export function onboard({ root = process.cwd(), ts, apply = false, from, factor = false, variants = false } = {}) {
+  // --variants IS a form of factoring (it writes bricks and swaps includes) — without --factor
+  // there is no factoring pass to hang it on, so this is a usage error, never a silent no-op.
+  if (variants && !factor) return { ok: false, msg: "onboard: --variants requires --factor (materializing variant families is a form of factoring) — re-run with --factor --variants" };
   // Backslash spelling of --from (Fable B6) only self-normalizes via join()/resolve() on win32 —
   // POSIX treats `\` as a literal filename character, so `sub\cmd` silently scanned nothing.
   // Fold to forward slashes up front so both the validation below and discover() agree cross-platform.
@@ -643,7 +811,7 @@ export function onboard({ root = process.cwd(), ts, apply = false, from, factor 
   if (!apply) {
     return {
       ok: true, applied: false, root: discRel, entries,
-      msg: summary(` Dry-run: nothing written. Re-run with --apply to migrate (originals are snapshotted first).${factor ? " (--factor takes effect together with --apply.)" : ""}${from ? "" : ` Scanning the configured out dir — use --from <dir> if your skills live elsewhere.`}`),
+      msg: summary(` Dry-run: nothing written. Re-run with --apply to migrate (originals are snapshotted first).${factor ? " (--factor takes effect together with --apply.)" : ""}${variants ? " (--variants takes effect together with --apply.)" : ""}${from ? "" : ` Scanning the configured out dir — use --from <dir> if your skills live elsewhere.`}`),
     };
   }
 
@@ -703,7 +871,7 @@ export function onboard({ root = process.cwd(), ts, apply = false, from, factor 
   // never fail the run (worst case: everything stays verbatim, reported as kept).
   let factoring = null;
   if (factor && !gateFails.length) {
-    factoring = factorPass({ root, cfg, imported, backupDir });
+    factoring = factorPass({ root, cfg, imported, backupDir, variants });
   }
 
   // P9 (maintainer decision §8b.5): 100% migrated → enforceGenerated flips ON automatically,
@@ -757,8 +925,20 @@ export function onboard({ root = process.cwd(), ts, apply = false, from, factor 
   const ok = gateFails.length === 0;
   // F-34: the near-dup count is APPENDED (never reshapes the existing message) and only when
   // there is something to see — the msg stays byte-identical to pre-F-34 runs with no near-dups.
+  // --variants clause appended ONLY when something materialized (same additive stance): the msg
+  // stays byte-identical to a plain --factor run whenever the variants pass had nothing to do.
+  // Review FIX 3: once groups DID materialize, calling them "report-only" alongside
+  // "materialized" is a contradiction — the near-dup clause drops that claim exactly (and only)
+  // when the variant clause is present; with vGroupCount 0 the wording is byte-identical to F-34.
+  const vGroupCount = factoring?.variants?.length ?? 0;
+  const vBrickCount = vGroupCount ? factoring.variants.reduce((a, g) => a + g.bricks.length, 0) : 0;
+  const nearDupClause = factoring?.nearDups.length
+    ? (vGroupCount
+        ? `; ${factoring.nearDups.length} near-duplicate group(s) found (see the report)`
+        : `; ${factoring.nearDups.length} near-duplicate group(s) reported (report-only — see the report)`)
+    : "";
   const factorNote = factoring
-    ? ` Factoring: ${factoring.factored.length} shared brick(s) extracted${factoring.kept.length ? `, ${factoring.kept.length} kept verbatim (gate)` : ""}${factoring.nearDups.length ? `; ${factoring.nearDups.length} near-duplicate group(s) reported (report-only — see the report)` : ""}.`
+    ? ` Factoring: ${factoring.factored.length} shared brick(s) extracted${factoring.kept.length ? `, ${factoring.kept.length} kept verbatim (gate)` : ""}${nearDupClause}${vGroupCount ? `; ${vGroupCount} variant group(s) materialized (${vBrickCount} variant brick(s))` : ""}.`
     : "";
   return {
     ok, applied: true, root: discRel, entries, backupDir, gate, enforced, factoring,
