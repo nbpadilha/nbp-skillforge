@@ -544,7 +544,7 @@ test("assets: the bundled spec + wrapper resolve from the package and agree on t
   assert.match(spec, /forge-role: nbp-skillforge\/onboard/);
   assert.match(wrapper, /^---\nname: forge-onboard/m);
   assert.match(wrapper, /ONBOARD-SPEC/, "wrapper points at the embedded protocol (no file path — self-contained install)");
-  assert.match(readFileSync(new URL("../package.json", import.meta.url), "utf8"), /"assets\/"/); // URL direto: imune a %20 (dual-review)
+  assert.match(readFileSync(new URL("../package.json", import.meta.url), "utf8"), /"assets\/onboard\/"/); // URL direto: imune a %20 (dual-review)
 });
 
 // ═══ Fase 5 dual-review regression fixes ════════════════════════════════════════════════════
