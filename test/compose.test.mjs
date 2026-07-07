@@ -878,6 +878,96 @@ test("build: a brick showing include syntax inside its own fence is NOT a nested
   } finally { cleanup(root); }
 });
 
+// ── F-33: bang directive (`include!:`) opts a single include back into expansion INSIDE a
+// fence — the escape hatch for factoring duplicated fence content (subagent prompts etc.).
+// Plain `include:` keeps the F-03 verbatim-in-fence semantics untouched (regression-pinned). ──
+test("F-33: a bang include inside a ``` fence expands, with params/{{k}} substitution", () => {
+  const root = makeRoot({
+    bricks: { "sub-prompt": "You are the {{role}} subagent. Do the task." },
+    recipes: {
+      // Both forms in the SAME fence: the bang one expands, the plain one stays verbatim —
+      // proving the opt-in is per-directive (at the point of use), never per-fence.
+      outer: "---\nname: outer\n---\n# outer\n\n```md\n<!-- include!: sub-prompt | role=reviewer -->\n<!-- include: sub-prompt | role=ignored -->\n```\n",
+    },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.map((e) => e.msg).join("; "));
+    const txt = read(outFile(root, "outer"));
+    assert.match(txt, /```md\nYou are the reviewer subagent\. Do the task\./, "the bang directive must expand inside the fence, params applied");
+    assert.match(txt, /<!-- include: sub-prompt \| role=ignored -->\n```/, "the bang-less directive in the SAME fence must stay verbatim (F-03 regression)");
+  } finally { cleanup(root); }
+});
+
+test("F-33: a bang include inside a ~~~ (tilde) fence expands the same way", () => {
+  const root = makeRoot({
+    bricks: { inner: "Inner brick content." },
+    recipes: { outer: "---\nname: outer\n---\n# outer\n\n~~~md\n<!-- include!: inner -->\n~~~\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.map((e) => e.msg).join("; "));
+    assert.match(read(outFile(root, "outer")), /~~~md\nInner brick content\.\n~~~/);
+  } finally { cleanup(root); }
+});
+
+test("F-33: a bang include OUTSIDE any fence behaves exactly like a plain include", () => {
+  const root = makeRoot({
+    bricks: { "run-dir": "Run {{skill}} now." },
+    recipes: {
+      bang: "---\nname: bang\n---\n# bang\n\n<!-- include!: run-dir | skill=fix -->\n",
+      plain: "---\nname: plain\n---\n# plain\n\n<!-- include: run-dir | skill=fix -->\n",
+    },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.map((e) => e.msg).join("; "));
+    // Outside a fence the bang is inert: byte-identical BODY output for both spellings (the
+    // banner names each recipe, so compare everything after the banner line).
+    const afterBanner = (t) => t.split("\n").filter((l) => !/^<!-- GENERATED /.test(l) && !/^name:/.test(l)).join("\n").replace(/^# \w+/m, "# X");
+    assert.equal(afterBanner(read(outFile(root, "bang"))), afterBanner(read(outFile(root, "plain"))));
+    assert.match(read(outFile(root, "bang")), /Run fix now\./);
+  } finally { cleanup(root); }
+});
+
+// Ref-count parity (F-33 x F-03): compose() really inlines a bang-in-fence brick, so includesOf/
+// gc MUST count it — otherwise gc would archive a brick a live recipe depends on.
+test("F-33: a brick used ONLY via bang-in-fence is ref-counted — gc must NOT report it as orphan", () => {
+  const root = makeRoot({
+    bricks: { "fenced-dep": "Line 1.\nLine 2." },
+    recipes: {
+      outer: "---\nname: outer\n---\n# outer\n\n```md\n<!-- include!: fenced-dep -->\n```\n",
+    },
+  });
+  try {
+    assert.deepEqual(includesOf(read(recipe(root, "outer"))), ["fenced-dep"], "a bang directive in a fence must be ref-counted");
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.map((e) => e.msg).join("; "));
+    const g = gc(root); // dry: report only
+    assert.deepEqual(g.orphans, [], "gc must see the bang-in-fence consumer and keep the brick");
+    assert.equal(has(brick(root, "fenced-dep")), true);
+  } finally { cleanup(root); }
+});
+
+// Nested-include parity (F-33 x F-01): a bang directive inside a BRICK's fence would really be
+// expanded, so it is a REAL nested include → the same build error, nothing written. (A bang-less
+// fenced directive in a brick stays allowed — that's documentation, pinned above.)
+test("F-33: a bang include inside a fence in a BRICK body is a nested-include build error", () => {
+  const root = makeRoot({
+    bricks: { inner: "inner content", outer: "Outer.\n```md\n<!-- include!: inner -->\n```\n" },
+    recipes: { demo: "---\nname: demo\n---\n# demo\n\n<!-- include: outer -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, false, "a bang-in-fence inside a brick must fail the build");
+    assert.equal(r.written, 0);
+    assert.ok(r.errors.some((e) => e.kind === "build" &&
+      e.msg === "build error: [demo] brick outer contains a nested include (inner) — bricks must not include bricks (inline the content or include both from the recipe)"),
+      "same nested-include message as the unfenced case");
+    assert.equal(has(outFile(root, "demo")), false, "nothing written on the nested-include error");
+  } finally { cleanup(root); }
+});
+
 // ── F-04: empty frontmatter (`---\n---\n`) is recognized, not treated as absent ─
 test("build: recipe with EMPTY frontmatter → banner directly after the closing ---, no blank line", () => {
   const root = makeRoot({ recipes: { emptyfm: "---\n---\n# x\nbody\n" } });

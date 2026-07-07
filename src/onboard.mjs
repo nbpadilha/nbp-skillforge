@@ -28,21 +28,33 @@ const fold = (s) => (CASE_INSENSITIVE_FS ? s.toLowerCase() : s);
 // Returns { utf8, bom, text, includeLike, placeholders } — `text` is BOM-stripped, CRLF-normalized.
 // A body with a literal {{x}} is fine for the VERBATIM path (compose only substitutes inside
 // brick bodies, never in a recipe body) — recorded for Fase 4's no-factor rule, not a skip.
-// An include-like directive OUTSIDE a fence is a whole-file skip: the engine WOULD expand it
-// (build error `include of missing brick`), so there is no safe verbatim residual for it in v1.
+// An include-like directive the engine WOULD expand — outside a fence, or a bang (`include!:`)
+// directive anywhere (F-33) — is a whole-file skip: the build would try to expand it (build
+// error `include of missing brick`), so there is no safe verbatim residual for it in v1.
+// `includeLike` is null (none) | "unfenced" | "bang" — the KIND matters downstream because the
+// two cases have opposite remedies: an unfenced plain directive is disarmed by fencing it,
+// while a bang expands even inside a fence, so "fence it" advice for a bang is a dead end
+// (athena triage: a fenced bang got exactly that advice, already satisfied, and re-running
+// skipped it forever). Bang wins when both are present: fencing alone can never fix that file.
+// Still truthy/falsy-compatible with the old boolean for every `if (scan.includeLike)` caller.
 export function preScan(buf) {
   // BOM is detected on the RAW BYTES (EF BB BF) — TextDecoder strips a leading BOM during
   // decode by default, so a post-decode charCodeAt check would never fire (verified by test).
   const bom = buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf;
   let text;
   try { text = new TextDecoder("utf8", { fatal: true }).decode(buf); }
-  catch { return { utf8: false, bom, text: null, includeLike: false, placeholders: [] }; }
+  catch { return { utf8: false, bom, text: null, includeLike: null, placeholders: [] }; }
   // (decode already dropped the BOM, so splitFm's ^--- anchor is safe from here on)
   text = text.replace(/\r\n?/g, "\n");
   const { body } = splitFm(text);
   const isFenced = fenceMasker(body);
   INCLUDE.lastIndex = 0; // defensive — see compose.mjs's includesOf note
-  const includeLike = [...body.matchAll(INCLUDE)].some((m) => !isFenced(m.index));
+  // "Include-like" = the engine WOULD expand it on build (F-33 parity): a bang directive
+  // (`include!:`, m[1] === "!") expands even inside a fence, so it is a landmine wherever it sits;
+  // a bang-less directive is one only outside a fence (F-03 keeps it verbatim inside).
+  const matches = [...body.matchAll(INCLUDE)];
+  const includeLike = matches.some((m) => m[1] === "!") ? "bang"
+    : matches.some((m) => !isFenced(m.index)) ? "unfenced" : null;
   const placeholders = [...body.matchAll(/\{\{\s*[\w-]+\s*\}\}/g)].map((m) => m[0]);
   return { utf8: true, bom, text, includeLike, placeholders };
 }
@@ -159,9 +171,18 @@ export function discover(root, cfg, { from } = {}) {
       entries.push({ file: rel, name, status: "skip-collision", reason: `a DIFFERENT file with this name already exists in ${divergentOut}/ — the build would overwrite it without a snapshot`, proposal: "reconcile the two copies (or remove one), then re-run" });
       continue;
     }
-    // P3: an include-like directive outside a fence would be EXPANDED by the engine on build
-    // (→ `include of missing brick` error) — no safe verbatim path for it in v1.
-    if (scan.includeLike) { entries.push({ file: rel, name, status: "skip-include-like", reason: "body contains an include-like directive outside a code fence — the engine would try to expand it; fence it or onboard by hand" }); continue; }
+    // P3: an include-like directive the engine WOULD expand on build (→ `include of missing
+    // brick` error) — no safe verbatim path for it in v1. The reason names the actual case:
+    // "fence it" is only true advice for the unfenced plain directive — a bang (`include!:`)
+    // expands even inside a fence (F-33), so telling its author to fence it would be factually
+    // wrong AND a permanent dead end (the fence is often already there).
+    if (scan.includeLike) {
+      const reason = scan.includeLike === "bang"
+        ? "body contains a bang include directive (`include!:`) — the engine expands it even inside a code fence; remove the `!` (or the directive) or onboard by hand"
+        : "body contains an include-like directive outside a code fence — the engine would try to expand it; fence it or onboard by hand";
+      entries.push({ file: rel, name, status: "skip-include-like", reason });
+      continue;
+    }
     // P5: conformance per skill, BEFORE import — the build gate is all-or-nothing, so one bad
     // legacy name must never block the whole onboarded batch. Never renamed without consent.
     if (fm !== null) {
@@ -207,7 +228,9 @@ export function segmentBlocks(body) {
   const blocks = [];
   if (heads.length === 0 || heads[0] > 0) blocks.push({ heading: null, start: 0, end: heads[0] ?? lines.length });
   for (let h = 0; h < heads.length; h++) blocks.push({ heading: lines[heads[h]], start: heads[h], end: heads[h + 1] ?? lines.length });
-  return { lines, blocks };
+  // offsets + isFenced are exposed (additively) so the F-34 sub-block pass reuses THIS
+  // segmentation's fence mask instead of recomputing it — one mask per body, engine rules.
+  return { lines, blocks, offsets, isFenced };
 }
 
 // The CORE of a block = its lines minus leading/trailing blank lines. The core (exact bytes,
@@ -226,17 +249,61 @@ const slugHead = (heading) => {
   return s || "section";
 };
 
+// ── F-34(a): sub-block segmentation INSIDE a heading-section ─────────────────────────────────
+// A sub-block is a maximal run of lines that are neither blank nor fence-marker-shaped, so a
+// block can never straddle a fence boundary: the opening/closing ```/~~~ line is a delimiter
+// exactly like a blank line (and is never itself part of a block — swapping it away would break
+// the fence structure). The marker test mirrors compose's FENCE_RE deliberately as a
+// CONSERVATIVE SUPERSET: a fence-LOOKING content line inside a fence also delimits, which can
+// only shrink candidate blocks (less factoring, never a wrong swap) — the authoritative
+// inside/outside-a-fence decision for the swap comes from the exported fenceMasker (the engine's
+// own rule, F-33 parity). Because the mask only flips on marker lines and no block contains one,
+// every line of a block shares the fencedness of its first line.
+const SUBBLOCK_DELIM_RE = /^ {0,3}(`{3,}|~{3,})/;
+function segmentSubBlocks(lines, offsets, isFenced, start, end) {
+  const blocks = [];
+  const isDelim = (ln) => ln.trim() === "" || SUBBLOCK_DELIM_RE.test(ln);
+  for (let i = start; i < end; ) {
+    if (isDelim(lines[i])) { i++; continue; }
+    let j = i + 1;
+    while (j < end && !isDelim(lines[j])) j++;
+    blocks.push({ start: i, end: j, fenced: isFenced(offsets[i]) });
+    i = j;
+  }
+  return blocks;
+}
+
+// F-34: candidacy shared by the block factor pass AND the near-dup report — ≥3 lines (the same
+// micro-brick floor as sections, approved decision 6), no literal {{param}} (a placeholder inside
+// a BRICK body becomes a required param and breaks the build — and a suggested-{{param}} report
+// over an already-{{x}}'d block would be nonsense), and NO include directive at all, real or
+// documented (P3's no-factor rule): a fenced bang-less directive is legal documentation in a
+// recipe, but the extracted brick body loses the fence context, where the engine's nested-include
+// gate would see a REAL include and fail the whole build.
+const blockEligible = (text, lineCount) => {
+  if (lineCount < 3) return false;
+  PLACEHOLDER_RE.lastIndex = 0;
+  if (PLACEHOLDER_RE.test(text)) return false;
+  INCLUDE.lastIndex = 0; // defensive — INCLUDE is the exported GLOBAL regex (see compose.mjs)
+  return [...text.matchAll(INCLUDE)].length === 0;
+};
+
 // factorPass: find byte-identical cores shared by ≥2 skills (≥3 lines, no {{param}} — a literal
 // placeholder inside a BRICK body becomes a required param and breaks the build), write each as
 // bricks/onboarded/<slug>-<sha8>.md, swap each recipe's core LINES for the include directive,
 // rebuild, and gate EVERY affected skill; any gate failure reverts that skill to its verbatim
 // recipe (and drops a this-run brick nobody consumes). Factoring never fails the onboard.
+// Two granularities (F-34a): the original HEADING-SECTION pass runs first, untouched; a second
+// BLOCK pass then factors blank-line-delimited blocks inside the sections the first pass left
+// behind — including blocks INSIDE a code fence, swapped with the F-33 bang (`include!:`), the
+// only directive form the engine expands there. Same safety story at both granularities:
+// byte-identical only, judged by the round-trip gate, self-reverting per skill.
 //
 // Replacement is by SEGMENT COORDINATES, never by text search (dual-review finding, both
 // vendors): an indexOf over the whole body could match the same bytes embedded in ANOTHER
 // section/fence and factor the wrong spot — byte-faithful to the gate, structurally wrong.
-// Segment cores are disjoint line ranges by construction; applying them bottom-up per skill
-// keeps every index valid with no re-scan.
+// Segment cores (sections and blocks alike) are disjoint line ranges by construction; applying
+// them bottom-up per skill keeps every index valid with no re-scan.
 function factorPass({ root, cfg, imported, backupDir }) {
   const recipes = new Map(); // skill → { fm, body, verbatim }
   for (const e of imported) {
@@ -246,76 +313,145 @@ function factorPass({ root, cfg, imported, backupDir }) {
     recipes.set(e.skill, { fm, body, verbatim: raw });
   }
 
-  // Pass 1 — segment each skill ONCE; group cores by exact text with their line ranges.
-  const groups = new Map(); // core text → { heading, occ: Map(skill → [{coreStart, coreEnd}]) }
+  // Pass 1 — segment each skill ONCE; group section cores by exact text with their line ranges.
+  // The same walk also collects every eligible SUB-BLOCK (F-34): the near-dup report looks at ALL
+  // of them (even inside sections the section pass will factor — a third skill's variant is still
+  // worth surfacing), while block-FACTORING eligibility (residual sections only) is decided in
+  // pass 2b, after the section pass's outcome is known.
+  const groups = new Map(); // section core text → { heading, occ: Map(skill → [{coreStart, coreEnd}]) }
   const skillLines = new Map(); // skill → lines[] (single segmentation, coordinates stay valid)
+  const skillBlocks = new Map(); // skill → [{ start, end, fenced, text }] (F-34 sub-block candidates)
+  const nearDupIndex = new Map(); // F-34b: first line → Map(block text → Set(skill)) — report-only
   for (const [skill, r] of recipes) {
-    const { lines, blocks } = segmentBlocks(r.body);
+    const { lines, blocks, offsets, isFenced } = segmentBlocks(r.body);
     skillLines.set(skill, lines);
+    const subs = [];
     for (const blk of blocks) {
       const core = blockCore(lines, blk.start, blk.end);
-      if (!core) continue;
-      if (core.coreEnd - core.coreStart < 3) continue; // min 3 lines (approved decision 6)
-      PLACEHOLDER_RE.lastIndex = 0;
-      if (PLACEHOLDER_RE.test(core.text)) continue;   // no-factor span (P3)
-      const g = groups.get(core.text) ?? { heading: blk.heading, occ: new Map() };
-      if (!g.occ.has(skill)) g.occ.set(skill, []);
-      g.occ.get(skill).push({ coreStart: core.coreStart, coreEnd: core.coreEnd });
-      groups.set(core.text, g);
+      // min 3 lines (approved decision 6); {{param}} = no-factor span (P3)
+      if (core && core.coreEnd - core.coreStart >= 3 && !(PLACEHOLDER_RE.lastIndex = 0, PLACEHOLDER_RE.test(core.text))) {
+        const g = groups.get(core.text) ?? { heading: blk.heading, occ: new Map() };
+        if (!g.occ.has(skill)) g.occ.set(skill, []);
+        g.occ.get(skill).push({ coreStart: core.coreStart, coreEnd: core.coreEnd });
+        groups.set(core.text, g);
+      }
+      for (const sb of segmentSubBlocks(lines, offsets, isFenced, blk.start, blk.end)) {
+        const text = lines.slice(sb.start, sb.end).join("\n");
+        if (!blockEligible(text, sb.end - sb.start)) continue;
+        subs.push({ ...sb, text });
+        const byText = nearDupIndex.get(lines[sb.start]) ?? new Map();
+        (byText.get(text) ?? byText.set(text, new Set()).get(text)).add(skill);
+        nearDupIndex.set(lines[sb.start], byText);
+      }
     }
+    skillBlocks.set(skill, subs);
   }
 
-  // A group factors when ≥2 DISTINCT skills share the core in THIS batch, OR when a
-  // byte-identical brick ALREADY sits at the deterministic path (a later batch matching a
-  // previously-factored section — earlier recipes carry the include, not the raw text, so
-  // cross-batch sharing is only visible through the brick itself).
-  const candidates = [...groups.entries()];
-  if (!candidates.length) return { factored: [], kept: [] };
+  // F-34b — near-duplicate groups: first line byte-identical in ≥2 skills, bodies DIVERGE.
+  // REPORT-ONLY by design (triage F3c): parameterizing a near-dup is semantic work — Fase B,
+  // human-approved; nothing here writes a brick or touches a recipe. Deterministic ordering all
+  // the way down: variants by body text, skills lexicographic, groups by slug then first line
+  // (code-unit compares — locale-independent, the same stance as discover()'s scan sort).
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const nearDups = [];
+  for (const [firstLine, byText] of nearDupIndex) {
+    if (byText.size < 2) continue; // every occurrence byte-identical → the factor passes' territory
+    const skills = new Set();
+    for (const who of byText.values()) for (const s of who) skills.add(s);
+    if (skills.size < 2) continue; // divergence confined to ONE skill — nothing to share
+    const variants = [...byText.entries()]
+      .map(([text, who]) => ({ skills: [...who].sort(cmp), lines: text.split("\n") }))
+      .sort((a, b) => cmp(a.lines.join("\n"), b.lines.join("\n")));
+    nearDups.push({ slug: slugHead(firstLine), firstLine, skills: [...skills].sort(cmp), variants });
+  }
+  nearDups.sort((a, b) => cmp(a.slug, b.slug) || cmp(a.firstLine, b.firstLine));
 
   // Pass 2 — write bricks. Collision guard (dual-review): a pre-existing file at the computed
   // path is REUSED when byte-identical (idempotent re-run) and SKIPS the group otherwise (never
   // clobber a user brick; sha8 is 32 bits — cheap paranoia). Any write error also just skips the
-  // group: factoring degrades, it never throws the run away.
+  // group: factoring degrades, it never throws the run away. ensureBrick is shared by the section
+  // pass and the F-34 block pass — ONE collision/reuse policy, not two.
+  // A group factors when ≥2 DISTINCT skills share the core in THIS batch, OR when a
+  // byte-identical brick ALREADY sits at the deterministic path (a later batch matching a
+  // previously-factored section/block — earlier recipes carry the include, not the raw text, so
+  // cross-batch sharing is only visible through the brick itself).
   const created = [];   // bricks this run WROTE (deletable on no-consumer)
   const reused = [];    // pre-existing byte-identical bricks (user-owned — reported, never deleted)
-  const replacements = new Map(); // skill → [{coreStart, coreEnd, brickRel}]
-  for (const [text, g] of candidates) {
-    const brickRel = `onboarded/${slugHead(g.heading)}-${createHash("sha256").update(text).digest("hex").slice(0, 8)}`;
+  const ensureBrick = (text, slug, distinctSkills) => {
+    const brickRel = `onboarded/${slug}-${createHash("sha256").update(text).digest("hex").slice(0, 8)}`;
     const brickPath = join(root, cfg.bricks, brickRel + ".md");
-    let wroteThisRun = false;
     try {
       if (existsSync(brickPath)) {
         const cur = readFileSync(brickPath, "utf8");
-        if (cur !== text + "\n") continue; // different content at the same path → skip the group
-        reused.push(brickRel);
+        if (cur !== text + "\n") return null; // different content at the same path → skip the group
+        // A brick the SECTION pass created THIS run can be re-matched byte-identically by the
+        // BLOCK pass (a whole-section block elsewhere) — record it once; the consumer merge at
+        // the end keys by brick path, so a duplicate here would double the report row.
+        if (!created.includes(brickRel) && !reused.includes(brickRel)) reused.push(brickRel);
       } else {
-        if (g.occ.size < 2) continue; // singleton with no pre-existing brick → nothing to share
+        if (distinctSkills < 2) return null; // singleton with no pre-existing brick → nothing to share
         mkdirSync(dirname(brickPath), { recursive: true });
         writeFileSync(brickPath, text + "\n");
-        wroteThisRun = true;
+        created.push(brickRel);
       }
-    } catch { continue; } // unwritable path (dir squatting the name, perms) → skip the group
-    if (wroteThisRun) created.push(brickRel);
-    for (const [skill, occs] of g.occ) {
-      (replacements.get(skill) ?? replacements.set(skill, []).get(skill)).push(
-        ...occs.map((o) => ({ ...o, brickRel })));
-    }
+    } catch { return null; } // unwritable path (dir squatting the name, perms) → skip the group
+    return brickRel;
+  };
+
+  const replacements = new Map(); // skill → [{coreStart, coreEnd, line}]
+  const addRep = (skill, rep) => (replacements.get(skill) ?? replacements.set(skill, []).get(skill)).push(rep);
+  for (const [text, g] of groups) {
+    const brickRel = ensureBrick(text, slugHead(g.heading), g.occ.size);
+    if (!brickRel) continue;
+    for (const [skill, occs] of g.occ)
+      for (const o of occs) addRep(skill, { coreStart: o.coreStart, coreEnd: o.coreEnd, line: `<!-- include: ${brickRel} -->` });
   }
 
-  // Pass 3 — apply per skill, bottom-up (ranges are disjoint segments; descending order keeps
-  // every earlier index valid). One write per touched skill.
+  // Pass 2b (F-34a) — block granularity, ONLY in the residual the section pass left behind: an
+  // occurrence overlapping a section replacement for ITS skill is already factored (those lines
+  // are about to be spliced away — swapping inside them would corrupt coordinates); blocks in
+  // untouched sections are fair game. Grouping happens HERE, after the section outcome is known,
+  // so a skill whose whole section factored never drags its sub-blocks into a group.
+  const blockGroups = new Map(); // block text → Map(skill → [{start, end, fenced}])
+  for (const [skill, subs] of skillBlocks) {
+    const reps = replacements.get(skill) ?? [];
+    for (const sb of subs) {
+      if (reps.some((rp) => sb.start < rp.coreEnd && sb.end > rp.coreStart)) continue;
+      const occ = blockGroups.get(sb.text) ?? new Map();
+      (occ.get(skill) ?? occ.set(skill, []).get(skill)).push(sb);
+      blockGroups.set(sb.text, occ);
+    }
+  }
+  for (const [text, occ] of blockGroups) {
+    const first = text.slice(0, text.indexOf("\n")); // ≥3 lines by candidacy, so "\n" always exists
+    const brickRel = ensureBrick(text, slugHead(first), occ.size);
+    if (!brickRel) continue;
+    // The directive line keeps the block's first-line INDENT: compose() inlines b.trim(), which
+    // strips exactly that leading run from the (verbatim) brick body — indent-on-the-directive +
+    // verbatim brick is the pair that makes the round trip byte-identical (the gate still judges
+    // it; e.g. trailing whitespace on the LAST block line is also trimmed and self-reverts).
+    // Inside a fence the swap uses the F-33 bang (`include!:`) — the only form the engine expands
+    // there; outside, the plain directive (byte-identical semantics to the section pass).
+    const indent = /^[ \t]*/.exec(first)[0];
+    for (const [skill, occs] of occ)
+      for (const o of occs)
+        addRep(skill, { coreStart: o.start, coreEnd: o.end, line: `${indent}<!-- include${o.fenced ? "!" : ""}: ${brickRel} -->` });
+  }
+
+  // Pass 3 — apply per skill, bottom-up (section and block ranges are disjoint by construction;
+  // descending order keeps every earlier index valid). One write per touched skill.
   const touched = new Set();
   for (const [skill, reps] of replacements) {
     const lines = skillLines.get(skill).slice();
     for (const rep of reps.sort((a, b) => b.coreStart - a.coreStart)) {
-      lines.splice(rep.coreStart, rep.coreEnd - rep.coreStart, `<!-- include: ${rep.brickRel} -->`);
+      lines.splice(rep.coreStart, rep.coreEnd - rep.coreStart, rep.line);
     }
     const r = recipes.get(skill);
     r.body = lines.join("\n");
     writeFileSync(join(root, cfg.recipes, skill + ".md"), r.fm === null ? r.body : `---\n${r.fm}${r.fm ? "\n" : ""}---\n${r.body}`);
     touched.add(skill);
   }
-  if (!touched.size) return { factored: [], kept: [] };
+  if (!touched.size) return { factored: [], kept: [], nearDups };
 
   // Rebuild + gate every touched skill; revert the ones that fail (never fail the run).
   // A build-level failure reverts EVERY touched skill — deliberately global: a broken factored
@@ -346,7 +482,41 @@ function factorPass({ root, cfg, imported, backupDir }) {
   for (const brick of reused) {
     if (consumers[brick]?.size) factored.push({ brick, usedBy: [...consumers[brick]].sort(), reused: true });
   }
-  return { factored, kept };
+  return { factored, kept, nearDups };
+}
+
+// ── F-34(b): near-duplicate report rendering (pure — report-only, never a write) ─────────────
+// Mechanical {{param}} suggestion for ONE differing line position: the longest common prefix +
+// suffix across every variant, with {{paramN}} in the varying middle. Purely lexical (never
+// semantic — naming the param is the human's Fase B job); deterministic by construction.
+const suggestParamLine = (texts, n) => {
+  const min = Math.min(...texts.map((t) => t.length));
+  let p = 0;
+  while (p < min && texts.every((t) => t[p] === texts[0][p])) p++;
+  // The suffix scan is capped at `min - p` so prefix and suffix never overlap on the shortest variant.
+  let s = 0;
+  while (s < min - p && texts.every((t) => t[t.length - 1 - s] === texts[0][texts[0].length - 1 - s])) s++;
+  return texts[0].slice(0, p) + `{{param${n}}}` + texts[0].slice(texts[0].length - s);
+};
+// One group → markdown lines: the diff lists ONLY the positions that differ, each variant line
+// prefixed by the skills that carry it. Line 0 (the group key) is identical by construction and
+// never listed. A position where some variant has no line gets "(no such line)" and NO param
+// suggestion (a single-line {{param}} cannot absorb a structural difference).
+function renderNearDup(g) {
+  const out = [`### ${g.slug} — first line: \`${g.firstLine}\``, ``, `- skills: ${g.skills.join(", ")}`];
+  const maxLen = Math.max(...g.variants.map((v) => v.lines.length));
+  let param = 0;
+  for (let i = 1; i < maxLen; i++) {
+    const texts = g.variants.map((v) => v.lines[i]);
+    if (texts.every((t) => t === texts[0])) continue;
+    out.push(`- line ${i + 1} differs:`);
+    for (const v of g.variants) out.push(`  - ${v.skills.join(", ")}: ${v.lines[i] === undefined ? "(no such line)" : "`" + v.lines[i] + "`"}`);
+    if (!texts.includes(undefined)) out.push(`  - suggested \`{{param${++param}}}\` line: \`${suggestParamLine(texts, param)}\``);
+  }
+  if (new Set(g.variants.map((v) => v.lines.length)).size > 1)
+    out.push(`- note: the variants differ in line COUNT — align their structure by hand before extracting a shared brick`);
+  out.push(``);
+  return out;
 }
 
 // ── report (P8): decision telemetry, inside the run's backup dir ─────────────────────────────
@@ -376,10 +546,30 @@ function writeReport(backupDir, { discRel, entries, gate, applied, enforce, fact
         : [`No byte-identical shared block (≥3 lines, no {{param}}) was found across two or more skills.`]),
       ...(factoring.kept.length ? [``, `Kept **verbatim** (factored round-trip failed its gate and was reverted): ${factoring.kept.join(", ")}.`] : []),
       ``,
+      // F-34(b): report-only — these groups changed NOTHING on disk (no brick, no recipe swap).
+      `## near-duplicates (report-only — candidates for a {{param}} brick)`,
+      ``,
+      ...(factoring.nearDups.length
+        ? [
+            `${factoring.nearDups.length} group(s) share a byte-identical first line across skills but diverge in the body. Nothing was written for these — they are Fase B candidates: extract a {{param}} brick by hand (via forge-onboard) if the variation is a real parameter.`,
+            ``,
+            ...factoring.nearDups.flatMap(renderNearDup),
+          ]
+        : [`No near-duplicate block group (same first line in ≥2 skills, diverging body) was found.`, ``]),
     ] : []),
     ...(enforce ? [`## enforceGenerated`, ``, enforce, ``] : []),
   ].join("\n");
-  writeFileSync(join(backupDir, "onboard-report.md"), md);
+  // Hard guard (athena triage F2, proven by execution): a USER SKILL literally named
+  // `onboard-report.md` lands in this dir as a byte-faithful snapshot BEFORE the report is
+  // written — writing the report over it would silently destroy the only byte-exact copy of the
+  // original (the recipe survives, but LF/BOM-normalized), and the report's own rollback
+  // instruction would then restore the report text over the user's skill. The backup dir is
+  // fresh per run (snapshot() refuses an existing one) and this is the run's single report
+  // write, so a pre-existing file here can ONLY be a snapshot: never overwrite it — fall back
+  // to the first free `onboard-report-<n>.md` instead.
+  let dest = join(backupDir, "onboard-report.md");
+  for (let n = 2; existsSync(dest); n++) dest = join(backupDir, `onboard-report-${n}.md`);
+  writeFileSync(dest, md);
 }
 
 // ── installSkill: materialize the ephemeral forge-onboard agent skill from the package ───────
@@ -565,8 +755,10 @@ export function onboard({ root = process.cwd(), ts, apply = false, from, factor 
   writeReport(backupDir, { discRel, entries, gate, applied: true, enforce: enforceNote, factoring });
 
   const ok = gateFails.length === 0;
+  // F-34: the near-dup count is APPENDED (never reshapes the existing message) and only when
+  // there is something to see — the msg stays byte-identical to pre-F-34 runs with no near-dups.
   const factorNote = factoring
-    ? ` Factoring: ${factoring.factored.length} shared brick(s) extracted${factoring.kept.length ? `, ${factoring.kept.length} kept verbatim (gate)` : ""}.`
+    ? ` Factoring: ${factoring.factored.length} shared brick(s) extracted${factoring.kept.length ? `, ${factoring.kept.length} kept verbatim (gate)` : ""}${factoring.nearDups.length ? `; ${factoring.nearDups.length} near-duplicate group(s) reported (report-only — see the report)` : ""}.`
     : "";
   return {
     ok, applied: true, root: discRel, entries, backupDir, gate, enforced, factoring,
