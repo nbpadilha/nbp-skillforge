@@ -19,7 +19,7 @@
 // wraps TWO realpath calls jointly, with an intentionally asymmetric lexical fallback that has
 // no equality case — folding it into canon()'s per-call fallback would change that asymmetry).
 import { realpathSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { resolve, sep, dirname, basename, join } from "node:path";
 
 // Exported (F-31 Fase 1): the onboarding layer folds LOGICAL names (recipe/skill names, not
 // absolute paths — canonFold only serves the latter) when detecting collisions on a
@@ -28,7 +28,24 @@ import { resolve, sep } from "node:path";
 export const CASE_INSENSITIVE_FS = process.platform === "win32" || process.platform === "darwin";
 
 export function canon(p) {
-  try { return realpathSync.native(resolve(p)); } catch { return resolve(p); }
+  const target = resolve(p);
+  // Nearest-existing-ancestor fallback: a lone resolve() on a nonexistent path leaves any
+  // symlinked ANCESTOR unresolved (macOS: /var/folders/... -> /private/var/folders/...), while an
+  // already-existing sibling realpaths straight through it — the two then disagree on the same
+  // logical location and an isInside() containment check between them false-negatives (CONFIRMED:
+  // onboard's --from-inside-a-not-yet-created role-dir guard on macOS CI). Walk up from `target`
+  // until an ancestor actually exists, realpath THAT, then reattach the missing tail literally.
+  let dir = target;
+  const tail = [];
+  while (true) {
+    try { return tail.length ? join(realpathSync.native(dir), ...tail) : realpathSync.native(dir); }
+    catch {
+      const parent = dirname(dir);
+      if (parent === dir) return target; // reached the filesystem root — nothing exists, give up
+      tail.unshift(basename(dir));
+      dir = parent;
+    }
+  }
 }
 
 export function canonFold(p) {

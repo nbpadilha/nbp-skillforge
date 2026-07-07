@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { sep, join } from "node:path";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isInside, canon, canonFold } from "../src/paths.mjs";
 
@@ -65,4 +65,26 @@ test("canonFold: folds a path neither side of which exists yet (C7 mechanism) �
   const b = join(root, "NOPE", "SUB"); // same path, different case, neither exists
   assert.notEqual(canon(a), canon(b), "sanity: canon() alone does NOT fold two nonexistent case-variants");
   assert.equal(canonFold(a), canonFold(b), "canonFold() must fold them to the same identity");
+});
+
+// ── ancestor-symlink asymmetry (macOS CI regression, 2026-07-07): an EXISTING dir realpaths
+// through a symlinked ANCESTOR (macOS: /var/folders/... -> /private/var/folders/...) but a
+// NONEXISTENT descendant of that same dir used to fall back to a purely lexical resolve() that
+// left the ancestor symlink unresolved — so canon(root) and canon(join(root, "not-yet-created"))
+// disagreed on the same logical location, and onboard's --from-inside-a-role-dir guard
+// false-negatived (isInside saw two different prefixes) whenever the role dir didn't exist yet.
+// Skips where the OS won't let us create a directory symlink (Windows without the privilege).
+test("canon: a nonexistent child of a dir reached through a symlinked ancestor still canonicalizes UNDER that dir (ancestor-symlink asymmetry)", () => {
+  const realBase = mkdtempSync(join(tmpdir(), "paths-realbase-"));
+  const linkPath = mkdtempSync(join(tmpdir(), "paths-linkslot-"));
+  rmSync(linkPath, { recursive: true, force: true }); // free the unique name, reuse it as the symlink itself
+  let made = true;
+  try { symlinkSync(realBase, linkPath, "dir"); } catch { made = false; }
+  if (!made) { rmSync(realBase, { recursive: true, force: true }); return; } // no symlink privilege — skip
+  try {
+    const root = join(linkPath, "proj");
+    mkdirSync(root); // root EXISTS — realpath resolves the ancestor symlink for it
+    const child = join(root, "recipes"); // does NOT exist yet — the case that used to break
+    assert.equal(isInside(canon(child), canon(root)), true, `canon(child)=${canon(child)} must be inside canon(root)=${canon(root)}`);
+  } finally { rmSync(linkPath, { force: true }); rmSync(realBase, { recursive: true, force: true }); }
 });
