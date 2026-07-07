@@ -55,6 +55,60 @@ test("install-hooks: refuses a foreign pre-commit unless --force (which backs it
   } finally { cleanup(root); }
 });
 
+// npx hint: a consumer-authored hook that invokes the forge via npx is a broken pattern
+// (npm >= 9 ignores --no-install, so npx can hit the registry and hang offline). The refusal
+// path must APPEND a pointer to the documented LOCAL-ONLY pattern — still non-fatal,
+// still non-clobbering, same { ok:false } shape.
+test("install-hooks: refusal over a foreign hook calling npx nbp-skillforge adds the LOCAL-ONLY hint", () => {
+  const root = bareRoot();
+  try {
+    gitInit(root);
+    writeFileSync(preCommit(root), "#!/bin/sh\nnpx --no-install nbp-skillforge check\n");
+    const r = installHooks({ root });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /already exists/, "refusal message itself is unchanged");
+    assert.match(r.msg, /LOCAL-ONLY/, "hint points at the documented local-only resolution");
+    assert.match(readFileSync(preCommit(root), "utf8"), /npx --no-install/, "foreign hook untouched");
+  } finally { cleanup(root); }
+});
+
+test("install-hooks: the npx hint also fires for the PRE-RENAME package name (npx nbp-forge)", () => {
+  const root = bareRoot();
+  try {
+    gitInit(root);
+    writeFileSync(preCommit(root), "#!/bin/sh\nnpx nbp-forge check\n");
+    const r = installHooks({ root });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /LOCAL-ONLY/, "old package name still gets the hint");
+  } finally { cleanup(root); }
+});
+
+test("install-hooks: a foreign hook WITHOUT npx is refused with NO hint (regression)", () => {
+  const root = bareRoot();
+  try {
+    gitInit(root);
+    writeFileSync(preCommit(root), "#!/bin/sh\necho someone elses hook\n");
+    const r = installHooks({ root });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /already exists/);
+    assert.ok(!/LOCAL-ONLY/.test(r.msg), "hint only appears when the hook actually uses npx + the forge");
+  } finally { cleanup(root); }
+});
+
+test("install-hooks: --force over an npx-calling hook replaces it normally, no hint", () => {
+  const root = bareRoot();
+  try {
+    gitInit(root);
+    writeFileSync(preCommit(root), "#!/bin/sh\nnpx --no-install nbp-skillforge check\n");
+    const r = installHooks({ root, force: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.backedUp, true);
+    assert.ok(!/LOCAL-ONLY/.test(r.msg), "the replacing shim already resolves locally — no hint needed");
+    assert.match(readFileSync(preCommit(root), "utf8"), /nbp-skillforge hook shim/);
+    assert.match(readFileSync(preCommit(root) + ".local.bak", "utf8"), /npx --no-install/, "npx hook preserved in backup");
+  } finally { cleanup(root); }
+});
+
 // Retrocompat (package rename): a shim installed BEFORE the nbp-forge → nbp-skillforge rename
 // carries the OLD marker line — it must be recognized as OURS and replaced in place (no --force
 // needed, no .local.bak), not treated as a foreign hook. Mirrors the tolerant marker regex.
