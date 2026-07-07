@@ -1134,6 +1134,202 @@ test("Fable B2b: restore has the same pre-flight", () => {
   } finally { cleanup(root); }
 });
 
+// ═══ F-35: `keep: true` in a brick's frontmatter pins it against auto-archival ═══════════════
+test("F-35 gc: a pinned orphan survives dry-run AND --apply (soft); a plain orphan is still archived", () => {
+  const root = makeRoot({
+    bricks: {
+      staging: "---\nkeep: true\n---\nintentional orphan — staging content\n",
+      plain: "unpinned orphan\n",
+      used: "used",
+    },
+    recipes: { r: "---\nname: r\n---\n# r\n\n<!-- include: used -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const dry = gc(root, { apply: false });
+    assert.deepEqual(dry.orphans, ["plain"], "the pinned brick must not be listed as an orphan");
+    assert.deepEqual(dry.pinned, ["staging"], "the pin is reported, never silent");
+    assert.match(dry.msg, /1 pinned brick\(s\) kept: staging/);
+
+    const applied = gc(root, { apply: true });
+    assert.deepEqual(applied.pinned, ["staging"]);
+    assert.equal(has(brick(root, "staging")), true, "--apply must never archive a pinned brick");
+    assert.equal(has(brick(root, "plain")), false, "the unpinned orphan is still archived (no regression)");
+    assert.equal(has(archived(root, "_orphans", "plain.md")), true);
+    assert.equal(has(archived(root, "_orphans", "staging.md")), false, "pinned brick never lands in the archive");
+  } finally { cleanup(root); }
+});
+
+test("F-35 gc --apply --hard: a pinned orphan is never deleted, even permanently", () => {
+  const root = makeRoot({
+    bricks: {
+      // SAME-quoted value is accepted (mirrors the forge-role matcher's quote rule).
+      staging: `---\nkeep: "true"\n---\nintentional orphan\n`,
+      plain: "unpinned orphan\n",
+    },
+  });
+  try {
+    const r = gc(root, { apply: true, hard: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.deepEqual(r.pinned, ["staging"]);
+    assert.match(r.msg, /pinned brick\(s\) kept: staging/);
+    assert.equal(has(brick(root, "staging")), true, "--hard must never delete a pinned brick");
+    assert.equal(has(brick(root, "plain")), false, "the unpinned orphan is still hard-deleted");
+  } finally { cleanup(root); }
+});
+
+test("F-35 gc: `keep: false` and `keep: \"maybe\"` do NOT pin (fail-closed) — both are archived", () => {
+  const root = makeRoot({
+    bricks: {
+      offkeep: "---\nkeep: false\n---\nnot pinned\n",
+      oddkeep: `---\nkeep: "maybe"\n---\nnot pinned either\n`,
+    },
+  });
+  try {
+    const r = gc(root, { apply: true });
+    assert.deepEqual([...r.orphans].sort(), ["oddkeep", "offkeep"], "any value other than true must not pin");
+    assert.deepEqual(r.pinned, [], "nothing pinned");
+    assert.equal(has(brick(root, "offkeep")), false);
+    assert.equal(has(brick(root, "oddkeep")), false);
+  } finally { cleanup(root); }
+});
+
+test("F-35 remove (soft): a pinned EXCLUSIVE brick leaves the sweep — kept in place, reported", () => {
+  const root = makeRoot({
+    bricks: {
+      pinned: "---\nkeep: true\n---\npinned exclusive body\n",
+      solo: "plain exclusive body\n",
+    },
+    recipes: { only: "---\nname: only\n---\n# only\n\n<!-- include: pinned -->\n<!-- include: solo -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const r = remove("only", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.deepEqual(r.exclusive, ["solo"], "only the unpinned exclusive brick is swept");
+    assert.deepEqual(r.pinned, ["pinned"], "the pin is reported on the result");
+    assert.match(r.msg, /Kept \(pinned\): pinned\./);
+    assert.equal(has(brick(root, "pinned")), true, "pinned brick stays in the live tree");
+    assert.equal(has(archived(root, "only", "bricks", "pinned.md")), false, "pinned brick never archived");
+    assert.equal(has(brick(root, "solo")), false, "unpinned exclusive brick still archived (no regression)");
+    assert.equal(has(archived(root, "only", "bricks", "solo.md")), true);
+    // Coherence with gc: the surviving pinned brick is now a pinned ORPHAN — gc must keep it too.
+    const g = gc(root, { apply: false });
+    assert.deepEqual(g.orphans, []);
+    assert.deepEqual(g.pinned, ["pinned"]);
+  } finally { cleanup(root); }
+});
+
+test("F-35 remove --hard: a pinned exclusive brick is never deleted", () => {
+  const root = makeRoot({
+    bricks: { pinned: "---\nkeep: true\n---\npinned exclusive body\n" },
+    recipes: { gone: "---\nname: gone\n---\n# gone\n\n<!-- include: pinned -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const r = remove("gone", { root, hard: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.deepEqual(r.pinned, ["pinned"]);
+    assert.match(r.msg, /Kept \(pinned\): pinned\./);
+    assert.equal(has(brick(root, "pinned")), true, "--hard must never delete a pinned brick");
+    assert.equal(has(recipe(root, "gone")), false, "the recipe itself is still hard-deleted");
+  } finally { cleanup(root); }
+});
+
+test("F-35 remove: a pinned SHARED brick keeps the existing shared behavior (kept, listed as shared, not as pinned)", () => {
+  const root = makeRoot({
+    bricks: { both: "---\nkeep: true\n---\nshared AND pinned\n" },
+    recipes: {
+      a: "---\nname: a\n---\n# a\n\n<!-- include: both -->\n",
+      b: "---\nname: b\n---\n# b\n\n<!-- include: both -->\n",
+    },
+  });
+  try {
+    run({ root, mode: "build" });
+    const r = remove("a", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.deepEqual(r.pinned, [], "the pin sweep only applies to EXCLUSIVE bricks — shared handling is untouched");
+    assert.ok(r.shared.some((s) => s.brick === "both" && s.alsoUsedBy.includes("b")), "still reported as shared");
+    assert.match(r.msg, /Kept \(shared\): both \[b\]/);
+    assert.equal(has(brick(root, "both")), true);
+  } finally { cleanup(root); }
+});
+
+// ═══ malformed keep (athena triage): fail-closed stays intact, but the sweep must WARN ════════
+// Proven by execution: `keep: True` / `keep: yes` do NOT pin (correct per SPEC) and the brick was
+// deleted permanently under --apply --hard with no hint that a keep field even existed — the one
+// window where fail-closed silently crosses the user's INTENT. The sweep now warns; nothing pins.
+test("malformed keep: gc warns on `keep: True`/`keep: yes` orphans — still swept, never silent", () => {
+  const root = makeRoot({
+    bricks: {
+      "unpin-capital": "---\nkeep: True\n---\ntried to pin, YAML-style\n",
+      "unpin-yes": "---\nkeep: yes\n---\ntried to pin, yes-style\n",
+      "plain": "no keep field at all\n",
+      "pin-ok": "---\nkeep: true\n---\nwell-formed pin\n",
+    },
+  });
+  try {
+    // Dry-run first: the warning must appear BEFORE anything is deleted, so the user can fix the
+    // pin while the brick still exists.
+    const dry = gc(root, { apply: false });
+    assert.deepEqual([...dry.suspectKeep].sort(), ["unpin-capital", "unpin-yes"], "suspects are exposed on the --json shape (additive)");
+    assert.match(dry.msg, /warning: keep field present but not well-formed \(NOT pinned\): unpin-capital, unpin-yes/);
+    assert.match(dry.msg, /only `keep: true` pins/);
+    assert.deepEqual(dry.pinned, ["pin-ok"], "the well-formed pin still pins — behavior unchanged");
+    assert.ok(!dry.suspectKeep.includes("plain"), "a brick with NO keep field is never a suspect");
+
+    // --apply --hard: fail-closed is INTACT (the malformed-keep bricks are still deleted) but the
+    // deletion is announced together with the warning — never indistinguishable from a plain orphan.
+    const r = gc(root, { apply: true, hard: true });
+    assert.deepEqual([...r.suspectKeep].sort(), ["unpin-capital", "unpin-yes"]);
+    assert.match(r.msg, /deleted \(permanent\)/);
+    assert.match(r.msg, /warning: keep field present but not well-formed \(NOT pinned\): unpin-capital, unpin-yes/);
+    assert.equal(has(brick(root, "unpin-capital")), false, "fail-closed intact: malformed keep never pins");
+    assert.equal(has(brick(root, "unpin-yes")), false);
+    assert.equal(has(brick(root, "pin-ok")), true, "the well-formed pin survives --hard");
+  } finally { cleanup(root); }
+});
+
+test("malformed keep: gc msg/json are byte-stable when no keep field is malformed", () => {
+  const root = makeRoot({ bricks: { orphan: "no keep here\n" } });
+  try {
+    const r = gc(root, { apply: false });
+    assert.deepEqual(r.suspectKeep, [], "additive field present but empty");
+    assert.ok(!r.msg.includes("warning"), "no warning text is appended when there is nothing to warn about");
+    assert.equal(r.msg, "1 orphan brick(s): orphan (run with --apply to archive)", "pre-existing msg text unchanged");
+  } finally { cleanup(root); }
+});
+
+test("malformed keep: remove --hard warns before permanently sweeping a `keep: True` exclusive brick", () => {
+  const root = makeRoot({
+    bricks: { "want-pin": "---\nkeep: True\n---\ntried to pin\n", solo: "plain exclusive\n" },
+    recipes: { gone: "---\nname: gone\n---\n# gone\n\n<!-- include: want-pin -->\n<!-- include: solo -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const r = remove("gone", { root, hard: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.deepEqual(r.suspectKeep, ["want-pin"], "the suspect rides the --json shape (additive)");
+    assert.match(r.msg, /warning: keep field present but not well-formed \(NOT pinned\): want-pin — only `keep: true` pins/);
+    assert.equal(has(brick(root, "want-pin")), false, "fail-closed intact: the malformed keep is still swept");
+    assert.deepEqual(r.pinned, [], "nothing was actually pinned");
+  } finally { cleanup(root); }
+});
+
+test("malformed keep: remove without any keep field appends nothing (msg stability)", () => {
+  const root = makeRoot({
+    bricks: { solo: "plain exclusive\n" },
+    recipes: { gone: "---\nname: gone\n---\n# gone\n\n<!-- include: solo -->\n" },
+  });
+  try {
+    run({ root, mode: "build" });
+    const r = remove("gone", { root });
+    assert.equal(r.ok, true, r.msg);
+    assert.deepEqual(r.suspectKeep, []);
+    assert.ok(!r.msg.includes("warning: keep field"), "no spurious warning on a clean sweep");
+  } finally { cleanup(root); }
+});
+
 test("Fable B7: gc --apply --hard says 'deleted (permanent)', never 'archived'", () => {
   const root = makeRoot({ bricks: { orphan: "nobody uses me" } });
   try {

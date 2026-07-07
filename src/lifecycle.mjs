@@ -72,6 +72,43 @@ function unsafeName(skill) {
   return null;
 }
 
+// F-35: a brick whose frontmatter says `keep: true` is PINNED — exempt from every auto-archival
+// sweep (gc's orphan sweep and remove's exclusive-brick sweep), even under --apply --hard. This is
+// the escape hatch for an intentionally-orphan brick (e.g. staging content not yet wired into a
+// recipe) that gc would otherwise keep re-archiving. The matcher mirrors compose.mjs's
+// FORGE_ROLE_RE shape exactly: line-anchored, optionally SAME-quoted value via backreference
+// (`("|')?true\1` — an unparticipated group's backreference matches the empty string, so unquoted
+// passes and mismatched quotes fail), `\r?` before `$` so a caller-side CRLF slip stays immune.
+// FAIL-CLOSED by construction: any other value (`false`, `yes`, `"maybe"`), a missing field, no
+// frontmatter at all, or a read/parse error = NOT pinned — a pin must be an explicit, well-formed
+// opt-in, never something a parse hiccup grants (an accidental pin would silently defeat gc).
+// Brick fm is advisory and dropped on build, so the field never leaks into generated output.
+const KEEP_RE = /^keep:[ \t]*("|')?true\1[ \t]*\r?$/m;
+const isPinned = (P, b) => {
+  try {
+    const { fm } = splitFm(readFileSync(join(P.bricks, b + ".md"), "utf8").replace(/\r\n?/g, "\n"));
+    return fm !== null && KEEP_RE.test(fm);
+  } catch { return false; } // unreadable brick → not pinned (the sweep's own fs calls will surface real errors)
+};
+// A `keep:` field that is PRESENT but not well-formed (`keep: True`, `keep: yes`, mismatched
+// quotes, …) still means "not pinned" — the fail-closed rule above is intact — but it is the one
+// spot where fail-closed can silently cross the user's INTENT: under `--apply --hard` /
+// deletePolicy:"hard" the brick they tried to pin is deleted permanently, indistinguishable from
+// one with no keep at all (athena triage, proven by execution: `keep: True` deleted, no archive,
+// no hint). So the sweeps WARN — same fm read as isPinned, only ever run on the rare sweep
+// CANDIDATES (the F-35 cost posture); pinning behavior itself does not change here.
+const KEEP_FIELD_RE = /^keep:/m;
+const hasMalformedKeep = (P, b) => {
+  try {
+    const { fm } = splitFm(readFileSync(join(P.bricks, b + ".md"), "utf8").replace(/\r\n?/g, "\n"));
+    return fm !== null && KEEP_FIELD_RE.test(fm) && !KEEP_RE.test(fm);
+  } catch { return false; } // unreadable → nothing to warn about (mirrors isPinned's stance)
+};
+// The shared warning text (gc + remove): says what was found, what it did NOT do, and the one
+// well-formed spelling — so the user can fix the pin BEFORE a permanent --hard sweep eats it.
+const malformedKeepWarning = (suspects) =>
+  suspects.length ? ` warning: keep field present but not well-formed (NOT pinned): ${suspects.join(", ")} — only \`keep: true\` pins (see SPEC).` : "";
+
 // A brick path (from a recipe's include text) is only safe to move/delete if it resolves INSIDE
 // the bricks dir — a crafted `<!-- include: ../victim -->` must never let remove touch outside it.
 // realpath-aware so even a symlinked brick that points outside bricks/ is left untouched; falls
@@ -206,9 +243,18 @@ export function remove(skill, { root = process.cwd(), hard = false } = {}) {
   const consumers = brickConsumers(root, P.cfg);
   // Only consider bricks that resolve inside bricks/ for the move/delete — never act on an
   // include that escapes the tree (build already rejects it; this protects remove independently).
-  const exclusive = includes.filter((b) => consumers[b] && consumers[b].size === 1 && consumers[b].has(skill) && insideBricks(P, b));
+  const sweepable = includes.filter((b) => consumers[b] && consumers[b].size === 1 && consumers[b].has(skill) && insideBricks(P, b));
+  // F-35: a PINNED exclusive brick leaves the sweep entirely — never archived, never deleted,
+  // even with --hard. It becomes a pinned orphan afterward, which is coherent: gc's own sweep
+  // exempts it for the same reason. fm is read only for the rare sweep CANDIDATES (cheap).
+  const pinned = sweepable.filter((b) => isPinned(P, b));
+  const exclusive = sweepable.filter((b) => !pinned.includes(b));
+  // Malformed-keep warning (athena triage): a `keep: True`/`keep: yes` brick lands in `exclusive`
+  // and IS swept below — correct (fail-closed) but the user tried to pin it, so warn. Computed
+  // BEFORE the sweep: after a --hard delete the fm is gone and could no longer be read.
+  const suspectKeep = exclusive.filter((b) => hasMalformedKeep(P, b));
   const shared = includes
-    .filter((b) => !exclusive.includes(b))
+    .filter((b) => !sweepable.includes(b))
     .map((b) => ({ brick: b, alsoUsedBy: [...(consumers[b] || [])].filter((s) => s !== skill) }));
 
   if (policy === "soft") {
@@ -239,8 +285,13 @@ export function remove(skill, { root = process.cwd(), hard = false } = {}) {
   const verb = policy === "soft" ? "Archived" : "Deleted";
   const actionMsg = `skill "${skill}" removed (${policy}). ` +
     `${verb}: recipe${exclusive.length ? " + " + exclusive.length + " exclusive brick(s): " + exclusive.join(", ") : ""}. ` +
-    (shared.length ? `Kept (shared): ${shared.map((s) => `${s.brick} [${s.alsoUsedBy.join(",")}]`).join("; ")}.` : "No shared bricks.");
-  return { ok: r.ok, command: { ok: true, msg: actionMsg }, build: r, policy, exclusive, shared, errors: r.errors, warnings: r.warnings, msg: composeMsg(actionMsg, r) };
+    // F-35: a pin must never be silent — the user asked to remove and the tool kept something.
+    (pinned.length ? `Kept (pinned): ${pinned.join(", ")}. ` : "") +
+    (shared.length ? `Kept (shared): ${shared.map((s) => `${s.brick} [${s.alsoUsedBy.join(",")}]`).join("; ")}.` : "No shared bricks.") +
+    malformedKeepWarning(suspectKeep);
+  // `pinned`/`suspectKeep` are ADDITIVE on the --json shape (F-35 + the malformed-keep warning) —
+  // every pre-existing field is unchanged.
+  return { ok: r.ok, command: { ok: true, msg: actionMsg }, build: r, policy, exclusive, pinned, suspectKeep, shared, errors: r.errors, warnings: r.warnings, msg: composeMsg(actionMsg, r) };
 }
 
 // ── restore ───────────────────────────────────────────────────────────────────
@@ -292,7 +343,15 @@ export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
   // reserving too much defeats gc's job, so we err toward the smaller, unambiguous set.
   const DOC_BASENAMES = /^(readme|changelog|contributing|code_of_conduct|license|licence)$/i;
   const isDoc = (b) => DOC_BASENAMES.test(String(b).split("/").pop());
-  const orphans = mdFiles(P.bricks).map((f) => String(f).replace(/\.md$/, "")).filter((b) => !consumers[b] && !isDoc(b));
+  const candidates = mdFiles(P.bricks).map((f) => String(f).replace(/\.md$/, "")).filter((b) => !consumers[b] && !isDoc(b));
+  // F-35: PINNED bricks (`keep: true` in the brick's own fm) leave the orphan set entirely —
+  // never archived/deleted, even with --apply --hard. fm is read only for the rare orphan
+  // CANDIDATES (never every brick), same cost posture as check()'s F-31 orphan scan.
+  const pinned = candidates.filter((b) => isPinned(P, b));
+  const orphans = candidates.filter((b) => !pinned.includes(b));
+  // Malformed-keep warning (athena triage): computed BEFORE the apply sweep below — after a hard
+  // delete/archive the brick's fm is gone from disk and hasMalformedKeep could no longer read it.
+  const suspectKeep = orphans.filter((b) => hasMalformedKeep(P, b));
   const policy = (hard || P.cfg.deletePolicy === "hard") ? "hard" : "soft"; // fail closed to soft
   if (apply && orphans.length) {
     for (const b of orphans) {
@@ -309,8 +368,15 @@ export function gc(root = process.cwd(), { apply = false, hard = false } = {}) {
   // about a permanent, unrecoverable operation.
   // The dry-run hint is policy-aware too — "run with --apply to archive" under deletePolicy:
   // "hard" would promise recoverability the actual apply doesn't offer.
-  return { ok: true, orphans, applied: apply,
-    msg: orphans.length ? `${orphans.length} orphan brick(s): ${orphans.join(", ")}${apply ? (policy === "hard" ? " — deleted (permanent)" : " — archived") : ` (run with --apply to ${policy === "hard" ? "delete permanently" : "archive"})`}` : "no orphan bricks." };
+  // F-35: pins are reported, never silent — an invisible "gc did nothing to x" would read as a
+  // bug the next time the user looks for x among the orphans. `pinned` is ADDITIVE on the --json
+  // shape; `orphans`/`applied`/`msg`'s existing text are unchanged when nothing is pinned.
+  // `suspectKeep` is ADDITIVE on the --json shape (same stance as F-35's `pinned`) and the
+  // warning text is APPENDED — the pre-existing msg is byte-identical when nothing is malformed.
+  return { ok: true, orphans, pinned, suspectKeep, applied: apply,
+    msg: (orphans.length ? `${orphans.length} orphan brick(s): ${orphans.join(", ")}${apply ? (policy === "hard" ? " — deleted (permanent)" : " — archived") : ` (run with --apply to ${policy === "hard" ? "delete permanently" : "archive"})`}` : "no orphan bricks.") +
+      (pinned.length ? ` ${pinned.length} pinned brick(s) kept: ${pinned.join(", ")}.` : "") +
+      malformedKeepWarning(suspectKeep) };
 }
 
 // ── init (scaffold a forge project) ──────────────────────────────────────────
