@@ -23,12 +23,24 @@
 - `forge check` is green. If not, stop and surface that to the human first.
 
 ## 1 · Find the dedup groups (the divergent siblings)
-Scan the RECIPES (`forge list` for the map; then read each recipe body). Look for sections that
-are **similar but not identical** across ≥2 skills — same intent, drifted wording: setup steps,
-closing checklists, result contracts, folder conventions. The mechanical pass already took the
-byte-identical ones; whatever similarity remains is by definition divergent.
+**Primary input — existing variant families.** If the mechanical pass ran with `--variants`,
+the near-duplicates were already materialized as bricks named `bricks/onboarded/<slug>_NN.md`
+(frontmatter `variant-group: <slug>`; the onboard report lists each family under
+`materialized as:`). **Each family IS a dedup group, pre-assembled for you**: the `_NN` bricks
+are the variants (kept verbatim), and the consumers of each brick are the skills it serves.
+Process these families FIRST — elect one canonical version + `{{param}}`s per family (§2), get
+the per-group approval (§3), and verify by execution (§4), exactly as for any other group. After
+a family is unified, its recipes include the new unified brick instead of the `_NN` members —
+retire the `_NN` bricks by the normal means (they are now orphans: `forge gc` archives them, or
+`remove`/archive explicitly). Never hand-merge `_NN` bricks outside this protocol.
 
-**A dedup group = 1 candidate brick + the N skills it would serve.**
+Then scan the RECIPES (`forge list` for the map; then read each recipe body). Look for sections
+that are **similar but not identical** across ≥2 skills — same intent, drifted wording: setup
+steps, closing checklists, result contracts, folder conventions. The mechanical pass already took
+the byte-identical ones; whatever similarity remains is by definition divergent.
+
+**A dedup group = 1 candidate brick + the N skills it would serve** (a `<slug>_NN` variant
+family = 1 group whose variants are already on disk).
 
 ## 2 · Elect the canonical version (per group)
 Judge candidates on: completeness (covers the most cases), freshness (matches the CURRENT

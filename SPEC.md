@@ -309,6 +309,46 @@ is the assisted Fase B's job, human-approved, via `forge-onboard`). The onboard 
 byte-identical to before), and `--json` gains an additive `result.factoring.nearDups` array
 (`[{ slug, firstLine, skills, variants: [{ skills, lines }] }]`).
 
+**`--variants` (materialize near-duplicates as variant families):** opt-in on top of `--factor`
+(`--variants` without `--factor` is a usage error, exit 1; like `--factor` it only takes effect
+together with `--apply` — the dry-run says so). Each near-duplicate group above stops being
+report-only and is **materialized as a named variant family**: ONE brick **per variant** —
+`bricks/onboarded/<slug-of-first-line>_NN.md` (NN zero-padded to 2 digits, ≥100 grows unpadded),
+numbered in the report's deterministic variant order (by body text, code-unit) — every version
+kept **verbatim**; a variant shared by N skills is one brick with N consumers. This `<base>_NN`
+convention is the forge's **standard staging shape for human unification**: variant families are
+a deliberately **temporary, assumed state** — the golden rule ("variation is a parameter, never a
+forked copy") remains the target, and the `_NN` family is simply the governed, visible form of
+"not yet unified" (Fase B collapses each family into ONE `{{param}}` brick, human-approved). Each
+occurrence is swapped for an include exactly like the block pass (plain `include:` outside a
+fence, `include!:` inside; first-line indent preserved) and judged by the **same byte-identical
+fidelity gate** — a failing skill self-reverts to verbatim. The brick's frontmatter is advisory
+(`piece:`, `variant-group:`, `summary:` — dropped at build, so the round trip only sees the
+verbatim body). Families **grow across batches**: a new skill whose block is byte-identical to an
+existing member reuses that member's brick (any NN — reuse requires the on-disk name to match
+`<slug>_NN` in **exact case** and the body to be byte-identical, since the engine's include
+case-match would reject anything else); a divergent one takes the next free NN; a single new
+skill with no in-batch group is still **adopted** by an existing on-disk family (surfaced in the
+report as a cross-batch join). The family namespace is the slug alone — groups whose first lines
+slugify identically share one NN sequence. An **occupied `<slug>_NN` slot is never overwritten**:
+a pre-existing file there (any case, any content — checked with the filesystem's own semantics,
+so a case-insensitive FS counts `Deploy_01.md` as occupying `deploy_01`) makes the family
+allocate the next free NN instead, and post-gate cleanup only ever removes files this run created
+from scratch. Text claimed by a variant family is **never extracted by the byte-identical passes**
+(section or block): a version shared by several skills becomes one family member with those
+consumers — never a `<slug>-<sha8>` brick — so Fase B always sees the whole family. With
+`--variants` the report's
+near-duplicate header becomes `## near-duplicates (materialized as variant families — unify each
+into ONE {{param}} brick in Fase B)` and each group gains a `- materialized as: <slug>_01
+(skillA), …` line (without the flag the section stays byte-identical to before). `--json` gains
+an additive, post-gate `result.factoring.variants` array (`[{ group, firstLine, bricks:
+[{ brick, skills }] }]` — present under `--factor`, `[]` without `--variants`), and the summary
+appends `; N variant group(s) materialized (M variant brick(s))` only when N > 0 (the near-dup
+clause then reads `found (see the report)` — the `report-only` wording would be false once
+materialized; without `--variants` it stays byte-identical to before). Same safety
+story as all factoring: a write error degrades **per group** (kept verbatim, orphan writes swept),
+a gate mismatch reverts only that skill, and `--variants` never fails the run.
+
 **enforceGenerated auto-enable:** when the run ends 100% migrated (zero skips, zero gate
 failures, no un-governed stray in ANY out dir) and `enforceGenerated` was off, it is flipped to
 `true` automatically and announced loudly — from then on a hand-made skill in the out dir fails
@@ -321,8 +361,10 @@ agent skill (frontmatter marker `forge-role: nbp-skillforge/onboard`; idempotent
 overwrites a same-named file without the marker) into the first out dir. Its logic is the
 **harness-neutral** protocol shipped as `assets/onboard/ONBOARD-SPEC.md` (the Claude Code file is
 a thin reference wrapper): the agent groups the similar-but-divergent sections across skills
-(dedup group = 1 candidate brick + N skills), proposes one canonical version + `{{param}}`s per
-group, the human approves **per group**, and every applied group is verified by execution
+(dedup group = 1 candidate brick + N skills; an existing `onboarded/<slug>_NN` variant family —
+frontmatter `variant-group:` — is a **pre-assembled group**, its primary input), proposes one
+canonical version + `{{param}}`s per group, the human approves **per group**, and every applied
+group is verified by execution
 (`build` + `check` + diff vs the run's backup). The engine never lets the LLM's output through
 unverified — the deterministic gates stay the judge.
 

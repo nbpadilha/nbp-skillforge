@@ -41,6 +41,33 @@ All notable changes to this project are documented here. The format is based on
   written besides the report (applying a param brick remains the human-approved Fase B). The
   onboard summary appends `; N near-duplicate group(s) reported (report-only — see the report)`
   only when N > 0; `--json` additively gains `result.factoring.nearDups`.
+- **`onboard --variants` — materialize near-duplicate groups as variant families:** opt-in on top
+  of `--factor` (without it: usage error, exit 1; effective only with `--apply`, and the dry-run
+  says so). Each near-duplicate group becomes a **named variant family**: one brick per variant,
+  `onboarded/<slug-of-first-line>_NN` (zero-padded 2 digits, ≥100 unpadded), numbered in the
+  report's deterministic variant order — **every version kept verbatim** (a variant shared by N
+  skills = 1 brick, N consumers); the `_NN` family is the standard staging shape for the human
+  Fase B round that unifies each family into ONE `{{param}}` brick. Swap and safety mirror the
+  block pass: `include:` outside a fence / `include!:` inside, indent preserved, same
+  byte-identical fidelity gate with per-skill self-revert; a write error degrades per group and
+  the flag never fails the run. Brick frontmatter is advisory (`piece:`, `variant-group:`,
+  `summary:` — dropped on build). Families grow across batches: byte-identical members are reused
+  (any NN — requires exact on-disk case AND a byte-identical body), divergent ones take the next
+  free NN, and a lone new skill is adopted by an existing on-disk family (reported as a
+  cross-batch join); groups whose first lines slugify identically share one NN sequence. An
+  occupied `_NN` slot (pre-existing file, any case or content — filesystem semantics, so a
+  case-insensitive FS counts `Deploy_01.md` as occupying `deploy_01`) is **never overwritten**:
+  the family allocates the next free NN, and post-gate cleanup only removes files the run created
+  from scratch. Text claimed by a variant family is never extracted by the byte-identical passes
+  (section or block), so a version shared by several skills stays a family member instead of
+  splitting off as a `<slug>-<sha8>` brick. Report: the near-duplicates header becomes
+  `materialized as variant families — unify each into ONE {{param}} brick in Fase B` and each
+  group gains a `- materialized as: …` line (byte-identical to before without the flag). `--json`
+  additively gains post-gate `result.factoring.variants` (`[{ group, firstLine, bricks: [{ brick,
+  skills }] }]`; `[]` under `--factor` without `--variants`); the summary appends `; N variant
+  group(s) materialized (M variant brick(s))` only when N > 0, and the near-dup clause then reads
+  `found (see the report)` instead of the now-false `report-only` wording. ONBOARD-SPEC (Fase B protocol) now
+  treats existing `_NN` families as the primary, pre-assembled dedup groups.
 - **F-35 — brick pin (`keep: true`):** a brick whose frontmatter carries a well-formed
   `keep: true` (unquoted or same-quoted) is exempt from every auto-archival sweep — `gc`'s orphan
   sweep and `remove`'s exclusive-brick sweep — even with `--hard`. For intentionally-orphan
