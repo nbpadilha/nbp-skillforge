@@ -50,7 +50,20 @@ export function installHooks({ root = process.cwd(), force = false, onlyRoot = f
       // (`nbp-forge hook shim`) so a shim installed before the nbp-skillforge rename is recognized
       // as ours and cleanly replaced, not treated as a foreign hook.
       if (!/^# nbp-(?:skill)?forge hook shim/m.test(cur)) {
-        if (!force) return { ok: false, msg: `a non-nbp-skillforge pre-commit already exists: ${dest} (re-run with --force to back it up → pre-commit.local.bak and replace it)` };
+        if (!force) {
+          let msg = `a non-nbp-skillforge pre-commit already exists: ${dest} (re-run with --force to back it up → pre-commit.local.bak and replace it)`;
+          // Consumer-authored hooks often invoke the forge via `npx --no-install nbp-skillforge` —
+          // a broken pattern: npm >= 9 silently IGNORES --no-install, so npx may hit the registry
+          // and hang offline (or pull an arbitrary version). We're refusing to touch their hook
+          // (no --force), so the best we can do is warn and point at the documented LOCAL-ONLY
+          // pattern. Both package names matched so pre-rename (`nbp-forge`) hooks get the hint too.
+          // The --force path doesn't need this: the foreign hook is replaced by our shim, which
+          // already resolves the bundled hook locally.
+          if (/npx/.test(cur) && /nbp-(?:skill)?forge/.test(cur)) {
+            msg += `\nnote: your existing hook calls nbp-skillforge via npx — npx may hit the registry (npm >=9 ignores --no-install) and hang offline; use LOCAL-ONLY resolution instead (see README "Pre-commit hook").`;
+          }
+          return { ok: false, msg };
+        }
         const bak = dest + ".local.bak";
         if (existsSync(bak)) rmSync(bak); // make the backup rename deterministic across platforms
         renameSync(dest, bak);
