@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-07
+
+### Fixed
+- **`onboard --from` backslash spelling was Windows-only:** `join()`/`resolve()` split `\` as a
+  path separator on win32 but treat it as a literal filename character on POSIX, so a
+  Windows-style `--from sub\cmd` silently scanned an empty (nonexistent) directory on Linux/Mac
+  instead of the intended one. `from` is now folded to forward slashes on input, matching the
+  normalization already used elsewhere in the codebase.
+
 ## [0.7.0] - 2026-07-06
 
 > The **migration release**: the package is now `nbp-skillforge`, one recipe set can build to
