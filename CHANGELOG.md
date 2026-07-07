@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-07
+
+### Fixed
+- **`canon()` ancestor-symlink asymmetry (macOS CI regression):** an already-existing directory
+  realpaths through a symlinked ancestor (macOS: `/var/folders/... -> /private/var/folders/...`),
+  but a nonexistent descendant of that same directory fell back to a purely lexical `resolve()`
+  that left the ancestor symlink unresolved — so `canon(root)` and `canon(join(root, "not-yet-
+  created"))` disagreed on the same logical location, and onboard's `--from`-inside-a-role-dir
+  guard (self-ingestion check) reported the wrong reason whenever the role dir didn't exist yet.
+  `canon()` now walks up to the nearest existing ancestor, realpaths that, then reattaches the
+  missing tail. Dual cross-vendor adversarial review (codex gpt-5.5 + agy) before merge.
+
 ## [0.7.1] - 2026-07-07
 
 ### Fixed
