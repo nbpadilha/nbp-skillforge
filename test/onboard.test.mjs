@@ -57,6 +57,11 @@ test("discover: a PRE-RENAME banner (nbp-forge) is still recognized as generated
   try {
     const { entries } = discover(root, loadConfig(root));
     assert.equal(entries[0].status, "excluded-generated");
+    // Release-readiness fix (2026-07-07): this fixture is EXACTLY the orphan-output case — the
+    // banner is there but no recipe exists — so the reason must not claim "has a recipe"; it
+    // states only what the banner proves.
+    assert.match(entries[0].reason, /carries the GENERATED banner/, "reason states the evidence");
+    assert.doesNotMatch(entries[0].reason, /has a recipe/, "never asserts a recipe that may be gone");
   } finally { cleanup(root); }
 });
 
@@ -162,6 +167,10 @@ test("onboard --apply: E2E — snapshot faithful, recipes created, gate zero, ch
     const report = read(join(bak, "onboard-report.md"));
     for (const f of ["hand-made.md", "governed.md", "tool.md", "Bad_Name.md", "has-include.md", "binary.md", "nested.md"])
       assert.ok(report.includes(f), `report mentions ${f}`);
+    // Release-readiness fix (2026-07-07): the fidelity-gate verdict cell is EN like every other
+    // artifact of this repo — the old PT cell ("✔ fiel (diff normalizado zero)") must never return.
+    assert.match(report, /✔ faithful \(normalized diff zero\)/, "gate verdict rendered in EN");
+    assert.doesNotMatch(report, /fiel \(diff normalizado zero\)/, "no PT leftover in the report");
     // skips present → enforceGenerated must NOT auto-enable
     assert.equal(r.enforced, false);
     assert.equal(loadConfig(root).enforceGenerated, false);
@@ -568,6 +577,10 @@ test("factor review-fix: idempotent re-run reuses the identical brick (no dup, s
   try {
     const r1 = onboard({ root, ts: TS, apply: true, factor: true });
     assert.equal(r1.factoring.factored.length, 1);
+    // Release-readiness fix (2026-07-07): a FRESH extraction carries no "(reused)" clause — the
+    // additive suffix must appear only when a pre-existing brick was actually re-matched.
+    assert.match(r1.msg, /1 shared brick\(s\) extracted[,.]/, "fresh batch: plain 'extracted'");
+    assert.doesNotMatch(r1.msg, /reused/, "fresh batch: no reused clause");
     // new skill arrives later with the same shared section; re-run factors it against the SAME brick
     write(join(root, "out", "three.md"), `---\nname: three\ndescription: d.\n---\n# three\n\n${SH}\n`);
     const r2 = onboard({ root, ts: TS + "-b", apply: true, factor: true });
@@ -575,6 +588,12 @@ test("factor review-fix: idempotent re-run reuses the identical brick (no dup, s
     const f = r2.factoring.factored[0];
     assert.equal(f.reused, true, "pre-existing identical brick reused, not rewritten");
     assert.ok(f.usedBy.includes("three"));
+    // Release-readiness fix (2026-07-07): a batch that only RE-USES must say so — the bare
+    // "1 shared brick(s) extracted" read as a fresh write. Msg gains "(1 reused)" and the
+    // report's factoring table marks the row.
+    assert.match(r2.msg, /1 shared brick\(s\) extracted \(1 reused\)/, "reuse-only batch labeled in the msg");
+    const report2 = read(join(root, `_onboard-backup-${TS}-b`, "onboard-report.md"));
+    assert.ok(report2.includes(`| ${f.brick} (reused) |`), "report table marks the reused brick");
     assert.equal(run({ root, mode: "check" }).ok, true);
   } finally { cleanup(root); }
 });

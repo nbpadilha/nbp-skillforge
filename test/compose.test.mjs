@@ -550,6 +550,54 @@ test("build/check: a missing recipes directory is a clean error, not a crash", (
   } finally { cleanup(root); }
 });
 
+// Release-readiness fix (2026-07-07): the SPEC's --json contract says every result field is
+// ALWAYS present (consumers never branch on absence) — the two config-error early returns used
+// to emit a partial shape missing warnings/count/written/unchanged (and plan on build).
+test("run: config-error early returns carry the FULL result shape (role overlap + missing recipes, both modes)", () => {
+  const overlapRoot = makeRoot({ config: { out: "bricks" } });   // out === bricks role
+  const noRecipesRoot = makeRoot({ config: { recipes: "nope" } });
+  try {
+    for (const root of [overlapRoot, noRecipesRoot]) {
+      for (const mode of ["build", "check"]) {
+        const r = run({ root, mode });
+        assert.equal(r.ok, false);
+        assert.equal(r.errors[0].kind, "config");
+        // Aggregates present and zeroed/empty (nothing was composed or written).
+        assert.deepEqual(r.warnings, [], `${mode}: warnings always present`);
+        assert.equal(r.count, 0, `${mode}: count always present`);
+        assert.equal(r.written, 0, `${mode}: written always present`);
+        assert.equal(r.unchanged, 0, `${mode}: unchanged always present`);
+        assert.equal(r.drift, 0);
+        assert.equal(r.orphans, 0);
+        assert.equal(typeof r.destinations, "number");
+        // plan mirrors the happy path: an (empty) array on build, absent on check.
+        if (mode === "build") assert.deepEqual(r.plan, [], "build: plan always present (empty)");
+        else assert.equal(r.plan, undefined, "check: plan stays a build-only field");
+      }
+    }
+  } finally { cleanup(overlapRoot); cleanup(noRecipesRoot); }
+});
+
+// Release-readiness fix (2026-07-07): a DIRECTORY squatting a brick's name (bricks/foo.md/)
+// passes existsSync + realpath + the case-match, then readFileSync used to throw a raw EISDIR
+// that crashed the whole command — an environment problem must be a structured, blocking build
+// error, symmetric with the destination-side EISDIR handling (Fable B9).
+test("build: a brick that is a DIRECTORY is a structured build error (blocking), not an EISDIR crash", () => {
+  const root = makeRoot({ recipes: { demo: "---\nname: demo\ndescription: d.\n---\n# demo\n\n<!-- include: foo -->\n" } });
+  mkdirSync(join(root, "bricks", "foo.md"), { recursive: true }); // dir squatting the brick path
+  try {
+    const r = run({ root, mode: "build" }); // must NOT throw
+    assert.equal(r.ok, false);
+    assert.equal(r.written, 0, "blocking: nothing written project-wide");
+    assert.ok(r.errors.some((e) =>
+      e.kind === "build" && /cannot read brick foo \(\w+\) — is it a directory\?/.test(e.msg)),
+      `structured error expected, got: ${r.errors.map((e) => e.msg).join("; ")}`);
+    assert.equal(has(outFile(root, "demo")), false);
+    // check mode takes the same path (compose runs in both modes) — still no crash.
+    assert.equal(run({ root, mode: "check" }).ok, false);
+  } finally { cleanup(root); }
+});
+
 test("params: a bare key without `=` substitutes to an empty string (builds ok)", () => {
   const root = makeRoot({
     bricks: { b: "before[{{k}}]after" },

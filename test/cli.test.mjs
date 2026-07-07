@@ -26,6 +26,27 @@ test("help exits 0 and lists commands", () => {
   const out = execFileSync(node, [cli, "help"], { encoding: "utf8" });
   assert.match(out, /usage: nbp-skillforge <command>/);
   assert.match(out, /install-hooks/);
+  // Release-readiness fix (2026-07-07): the --json footer must list EVERY --json citizen
+  // (onboard was missing) and point at the section that actually exists — SPEC.md's
+  // "JSON output (--json)" (the README has no such section).
+  assert.match(out, /--json \(build\/check\/list\/gc\/onboard only\)/, "onboard is a full --json citizen");
+  assert.match(out, /SPEC\.md's "JSON output \(--json\)" section/, "shape reference points at SPEC.md");
+  assert.doesNotMatch(out, /README's "JSON output"/, "no pointer to a README section that does not exist");
+});
+
+// Release-readiness fix (2026-07-07): `help <unknown-topic>` used to print the GENERAL help with
+// exit 0 — success-shaped output for a typo. It is now the same contract as an unknown command.
+test("help <unknown-topic> exits 2 with `unknown command` (help <known> and bare help stay exit 0)", () => {
+  const bad = runCli(["help", "chekc"]);
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /unknown command: chekc/);
+  assert.match(bad.stdout, /usage: nbp-skillforge <command>/, "usage still shown to guide the correction");
+  const known = runCli(["help", "build"]);
+  assert.equal(known.status, 0);
+  assert.match(known.stdout, /build \[--dry-run\]/);
+  const bare = runCli(["help"]);
+  assert.equal(bare.status, 0);
+  assert.match(bare.stdout, /usage: nbp-skillforge <command>/);
 });
 
 test("unknown command exits 2", () => {
@@ -329,6 +350,27 @@ test("--json: an invalid forge.config.json still yields parseable JSON (ok:false
     assert.equal(r.ok, false);
     assert.match(r.error, /invalid JSON/);
     assert.equal(stderr, "", "no decorated stderr on the --json path, even on a thrown config error");
+  } finally { cleanup(root); }
+});
+
+// Release-readiness fix (2026-07-07): SPEC's --json contract — every field always present, a
+// consumer never branches on absence — must hold on the config-error early returns too (they
+// used to drop warnings/count/written/unchanged and build's plan).
+test("--json: build/check on a role-overlapping config still emit the FULL result shape", () => {
+  const root = makeRoot({ config: { out: "bricks" } }); // out === bricks role → config error
+  try {
+    for (const mode of ["build", "check"]) {
+      const { stdout, status } = runCli([mode, "--json", "--root", root]);
+      assert.equal(status, 1, `${mode} --json exits 1 on a config error`);
+      const r = JSON.parse(stdout);
+      assert.equal(r.ok, false);
+      assert.equal(r.errors[0].kind, "config");
+      for (const k of ["warnings", "count", "written", "unchanged", "drift", "orphans", "destinations"])
+        assert.ok(k in r, `${mode} --json: field '${k}' present`);
+      // plan: an (empty) array on build; absent on check — exactly like the happy path.
+      if (mode === "build") assert.deepEqual(r.plan, []);
+      else assert.equal("plan" in r, false);
+    }
   } finally { cleanup(root); }
 });
 

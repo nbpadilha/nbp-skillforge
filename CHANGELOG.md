@@ -95,6 +95,49 @@ All notable changes to this project are documented here. The format is based on
   squatted/unwritable brick path is now **per group**: inner blocks of a squatted section can
   still factor at their own paths (previously the whole run stayed verbatim).
 
+### Fixed
+Release-readiness battery (6 parallel testers per run), 10 fixes confirmed by execution — most critical first:
+- **Data loss — `gc` traversed directory junctions/symlinks inside `bricks/`:**
+  `readdirSync({recursive})` descends reparse points, so files reachable through a directory
+  junction/symlink a user had placed under `bricks/` (e.g. a linked folder of notes) were listed
+  as "orphan bricks", and `--apply` archived/deleted the REAL external files THROUGH the link
+  (`--hard` = permanent loss outside the project). `gc` — and `restore`'s archive scan, which had
+  the same exposure on a hand-placed link under the archive — now apply the same
+  realpath-containment guard `remove` has always had: a path that does not RESOLVE inside its base
+  dir is not a governable file — never listed as an orphan or a restore conflict, never touched.
+- **A DIRECTORY named `*.md` is never treated as a brick (cross-vendor review catch):** a dir like
+  `bricks/orphan.md/` crashed `gc --apply --hard` with a raw EISDIR (soft would archive the whole
+  tree as if it were a brick), and `remove` crashed AFTER deleting the recipe — recipe lost,
+  brick sweep half-done, no follow-up build (inconsistent state). Lifecycle scans are now
+  file-only (stat-verified, fail-closed) and `remove`'s exclusive sweep requires a regular file —
+  a non-file squatting a brick path is left untouched and reported in the Kept bucket.
+- **`new` wrote before validating the config:** `create()` was the one mutating command without
+  the role-overlap pre-flight — with a hostile layout (`out` == `bricks`, or `recipes` nested
+  inside `bricks`) it scaffolded the recipe first and only then failed, leaving the file on disk.
+  Now fail-closed: nothing is written on a refused config.
+- **Brick that is a directory:** a directory squatting `bricks/<name>.md` (or an unreadable brick)
+  crashed the build with a raw EISDIR stack trace; it is now a structured build error
+  (`cannot read brick <path> (…) — is it a directory?`), nothing written.
+- **`--json` config-error shape (build/check):** config-error results now carry the FULL result
+  shape (`warnings`/`count`/`written`/`unchanged`, and `plan: []` on build) — consumers never
+  branch on a field's absence, as the SPEC always promised.
+- **`help <unknown-command>` now exits 2** (stderr + usage), same contract as an unknown command;
+  bare `help` (and `help <known>`) stays exit 0. Previously a typo (`help chekc`) printed the
+  general help with a success exit.
+- **onboard-report gate verdict in EN:** `✔ faithful (normalized diff zero)` — the cell was a
+  leftover PT string (`✔ fiel (diff normalizado zero)`).
+- **`excluded-generated` reason no longer claims a recipe exists:** now
+  `carries the GENERATED banner — output files are never onboarded; edit the recipe instead`
+  (the old text said "has a recipe", false for an orphan output whose recipe was deleted).
+- **`(M reused)` in the factoring summary:** the onboard `--factor` message appends `(M reused)`
+  when pre-existing byte-identical bricks were re-matched instead of freshly written, and the
+  report's factoring table marks those rows `(reused)` — a reuse-only batch no longer reads as a
+  fresh extraction.
+- **`init` scaffolds the `conformance` key** in `forge.config.json` — the scaffold now spells out
+  every documented config key.
+- **README hook snippet gained `#!/bin/sh`:** without the shebang, Git for Windows blocked the
+  commit when the snippet was pasted as a pre-commit hook.
+
 ## [0.7.3] - 2026-07-07
 
 ### Fixed
