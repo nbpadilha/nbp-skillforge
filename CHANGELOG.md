@@ -6,6 +6,68 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **F-33 — bang include (`<!-- include!: path | k=v -->`):** a directive that expands **always —
+  inside or outside a fenced code block** (```` ``` ```` and `~~~` alike). The escape hatch for
+  factoring duplicated fence content (e.g. subagent prompts). Opt-in is **per directive, at the
+  point of use** — never per fence: a bang and a plain `include:` in the same fence behave
+  independently (the bang expands, the plain one stays verbatim). Plain `include:` is fully
+  unchanged (verbatim inside fences, expanded outside) — zero breaking change for existing
+  projects. Outside a fence the bang behaves byte-identically to `include:` (same params and
+  path-escape/symlink/case-match checks, same errors). A bang directive is ref-counted even
+  inside a fence (a brick consumed only via bang-in-fence is not a `gc` orphan, and `remove`'s
+  exclusive sweep sees the consumer); a bang directive inside a fence in a **brick** body is a
+  real nested include → the same build error as the unfenced case, nothing written. Syntax is
+  strict: the `!` must sit hard against `include` (`include !:` is not a directive). The onboard
+  pre-scan gained parity: a bang directive anywhere in a legacy file — even inside a fence —
+  makes it `skip-include-like`. Documented limitation: the literal token cannot be written in a
+  governed file (recipe/brick), not even fenced — break the token in examples (see SPEC's Known
+  limitations).
+- **F-34 — `onboard --factor` at block granularity + near-duplicate report:** factoring now runs
+  at two granularities — the heading-section pass (unchanged) plus a **block pass** over the
+  residuals. Blocks are blank-line-delimited AND fence-aware (a ```` ``` ````/`~~~` marker line
+  delimits like a blank line; a block never crosses a fence boundary); a candidate has ≥3 lines,
+  no `{{param}}`, no include-like directive (even one only documented inside a fence), and is
+  byte-identical in ≥2 skills or reuses a byte-identical pre-existing `onboarded/<slug>-<sha8>`
+  brick. The swap emits one directive line keeping the block's first-line indent — plain
+  `include:` outside a fence, the F-33 bang (`include!:`) inside one — so **duplicated content
+  inside code fences now factors** (previously it never could). Block bricks are named
+  deterministically `onboarded/<slug-of-first-line>-<sha8-of-block>`. Same safety story: per-skill
+  round-trip fidelity gate, self-reverting to verbatim on mismatch (known self-reverting case:
+  trailing whitespace on a block's last line). And a new **report-only near-duplicate section** in
+  `onboard-report.md` (`## near-duplicates (report-only — candidates for a {{param}} brick)`):
+  block groups with a byte-identical first line across ≥2 skills but diverging bodies, with a
+  per-skill diff of only the differing lines and a mechanical `{{param}}` suggestion — nothing is
+  written besides the report (applying a param brick remains the human-approved Fase B). The
+  onboard summary appends `; N near-duplicate group(s) reported (report-only — see the report)`
+  only when N > 0; `--json` additively gains `result.factoring.nearDups`.
+- **F-35 — brick pin (`keep: true`):** a brick whose frontmatter carries a well-formed
+  `keep: true` (unquoted or same-quoted) is exempt from every auto-archival sweep — `gc`'s orphan
+  sweep and `remove`'s exclusive-brick sweep — even with `--hard`. For intentionally-orphan
+  bricks (e.g. staging content not yet wired into a recipe). Fail-closed: any other value, a
+  missing field, no frontmatter, or an unreadable brick = not pinned. Never silent: `gc` appends
+  `N pinned brick(s) kept: …` and `remove` reports `Kept (pinned): …`; both results gain an
+  additive `pinned: string[]` array (existing fields/messages unchanged when nothing is pinned).
+  A pinned **shared** brick is still handled by the existing ref-count rule (`Kept (shared)`).
+  Like all brick frontmatter, the field is dropped on build and never reaches generated output.
+- **`install-hooks` npx hint:** refusing to replace a foreign pre-commit (no `--force`) that
+  invokes the forge via `npx` now appends a non-fatal LOCAL-ONLY hint to the refusal message
+  (`npx --no-install` is silently ignored on npm ≥ 9, so the hook can hit the registry on every
+  commit and hang offline). The refusal itself, exit behavior, and `--force` semantics are
+  unchanged; the match also recognizes the pre-rename `npx nbp-forge`. README gained the
+  referenced "Pre-commit hook" section with the canonical LOCAL-ONLY resolution snippet for
+  consumers who maintain their own hook.
+
+### Changed
+- **Exported `INCLUDE` regex: capture groups shifted** (F-33) — `m[1]` is now the bang (`"!"` or
+  `""`), `m[2]` the brick path (was `m[1]`), `m[3]` the params (was `m[2]`). Any external consumer
+  of the exported regex must update its group indices. `segmentBlocks()` additively returns
+  `{ offsets, isFenced }` alongside `{ lines, blocks }`.
+- **`onboard --factor` behavior vs 0.7.x:** duplicated content inside code fences now factors
+  (via `include!:`) — previously fenced content could never factor. Degradation on a
+  squatted/unwritable brick path is now **per group**: inner blocks of a squatted section can
+  still factor at their own paths (previously the whole run stayed verbatim).
+
 ## [0.7.3] - 2026-07-07
 
 ### Fixed
@@ -135,6 +197,10 @@ Pre-publish adversarial bug hunt (Fable), 12 confirmed-by-execution bugs, most-c
   guard (`examples/claude-code/forge-guard.mjs`) all recognize both `nbp-forge` (old) and
   `nbp-skillforge` (new) signatures — files generated and hooks installed before the rename keep
   working; the next `build`/`install-hooks` rewrites them under the new name.
+  **Migration note:** after upgrading, the first `forge build` rewrites the GENERATED banner of
+  **every** generated skill from `nbp-forge` to `nbp-skillforge` — a one-time, banner-only diff
+  across all outputs is expected and correct; committing it as an isolated commit is recommended
+  so real content changes stay reviewable.
 - README repositioned value-first (adopt-in-minutes / rollback-in-seconds); detailed
   config/JSON-output reference moved from README to SPEC.md (new "Config" and "JSON output"
   sections there); SETUP.md documents incremental adoption + exact rollback steps.

@@ -20,6 +20,8 @@ Once you run more than a couple of agent skills, keeping them consistent by hand
 - **One edit, every skill current.** Change the brick; every skill that uses it is up to date on the next build. No hunting copies.
 - **It never ships a drifted skill.** `forge check` fails the moment a generated skill diverges from its source — in CI, in your pre-commit hook. "Which copy is right?" stops being a question.
 - **Portable, zero lock-in.** Output is a standard, self-contained `SKILL.md`/command file — works with Claude Code, Codex, Cursor, and anything that reads the format. No proprietary syntax leaks into it. One recipe set can even build to **several destinations at once** (`"out": [".claude/commands", ".codex/prompts"]`) — same skills, N agent platforms, one source of truth.
+- **Shares even fenced content.** A plain `<!-- include: … -->` inside a code fence stays verbatim (so you can document the syntax), but the **bang form** `<!-- include!: … -->` expands *everywhere* — the escape hatch for factoring duplicated content that lives inside ``` blocks, like subagent prompts. Opt-in per directive, at the point of use.
+- **Pin what you mean to keep.** `keep: true` in a brick's frontmatter exempts it from every auto-archival sweep (`gc` and `remove`, even `--hard`) — for intentionally-orphan staging bricks. Always reported, never silent; the field is dropped on build and never reaches the output.
 - **Zero runtime dependencies.** One small CLI, Node ≥ 18. Nothing to audit, nothing to break.
 
 ## Adopt in minutes, leave in seconds
@@ -31,7 +33,7 @@ The reason it's safe to try: **you're never locked in, in either direction.**
 
 > Install is easy. Uninstall is easier — your skills were never hostages.
 
-> **Migrating a whole library? One command.** `forge onboard` reads your existing skills in one pass and shows exactly what it would do — nothing is written until you say `--apply`. Then it snapshots every original (byte-faithful backup + rollback instructions), migrates them, and a **fidelity gate** proves each migrated skill rebuilds identical to its original. Add `--factor` and the sections that are **byte-identical across skills become shared bricks automatically** — still gate-verified, still reverting to verbatim if fidelity would break. Skills it can't migrate safely are skipped and reported, never touched. When 100% of your library is governed, strict mode turns on by itself.
+> **Migrating a whole library? One command.** `forge onboard` reads your existing skills in one pass and shows exactly what it would do — nothing is written until you say `--apply`. Then it snapshots every original (byte-faithful backup + rollback instructions), migrates them, and a **fidelity gate** proves each migrated skill rebuilds identical to its original. Add `--factor` and the sections **and blocks** that are **byte-identical across skills become shared bricks automatically** — even blocks inside code fences (swapped via the `include!:` bang form) — still gate-verified, still reverting to verbatim if fidelity would break. Blocks that are *almost* identical (same first line, diverging body) are surfaced in a **near-duplicate report** with a mechanical `{{param}}` suggestion — report-only, nothing written, ready for the assisted step. Skills it can't migrate safely are skipped and reported, never touched. When 100% of your library is governed, strict mode turns on by itself.
 >
 > And for the parts that are similar-but-divergent across skills, there's the **assisted step**: `forge onboard --install-skill` drops a `forge-onboard` agent skill into your commands — run it in your agent and it proposes a unified version per group, **you approve group by group**, and the engine verifies every applied group by execution. The skill is package tooling (marked, ignored by scans, removed automatically when strict mode turns on) — its harness-neutral protocol ships in the package as `ONBOARD-SPEC.md`, so any capable agent can run it.
 
@@ -104,9 +106,39 @@ A complete runnable project lives in [`examples/`](examples/). Setting it up wit
 - **Generated files are never hand-edited** — you manage skills through the forge, and the drift-gate enforces it.
 - **Removing a skill never deletes a shared brick.** Ownership is by reference count; a brick used by several skills belongs to none and is never touched.
 - **Soft-delete by default.** `remove`/`gc` archive to `_archive/` (recoverable via `forge restore` or plain git); opt into hard deletes only if you want them.
-- **A pre-commit hook** (installed by `init`, best-effort, never clobbers an existing hook) runs the drift-gate *and* a basic secret scan before every commit.
+- **Pinned bricks are never auto-archived.** A brick with `keep: true` in its frontmatter survives `gc`'s orphan sweep and `remove`'s exclusive-brick sweep — even with `--hard` — and the keep is always reported (`pinned` also appears in the `--json` results).
+- **A pre-commit hook** (installed by `init`, best-effort, never clobbers an existing hook) runs the drift-gate *and* a basic secret scan before every commit — see [Pre-commit hook](#pre-commit-hook) below.
 
 The full command lifecycle, `forge.config.json` options, conformance rules, `--json` output shapes, and the safety/boundary model are documented in **[`SPEC.md`](SPEC.md)**. Common adoption pitfall and the shared-brick blast radius: [`SETUP.md`](SETUP.md) · [`SECURITY.md`](SECURITY.md). Visual overview: [`docs/architecture.html`](docs/architecture.html).
+
+## Pre-commit hook
+
+`init` (or `forge install-hooks`) installs a shim in `.git/hooks/pre-commit` that delegates to the
+versioned `scripts/hooks/pre-commit` shipped with the package: secret scan + drift-gate, checked
+against the **staged index**, resolved **local-only**. It never clobbers a hook it didn't install.
+
+**Maintaining your own pre-commit hook instead?** Resolve the forge binary locally — **never via
+`npx`**. `npx --no-install` is silently *ignored* on npm ≥ 9, so `npx nbp-skillforge check` in a
+hook can hit the npm registry on **every commit** — hanging when you're offline, or fetching an
+arbitrary version and running it at commit time. This is the canonical LOCAL-ONLY resolution
+(mirroring the shipped hook):
+
+```sh
+# LOCAL-ONLY resolution — prefer the project-local bin, fall back to PATH, else skip.
+if [ -x "node_modules/.bin/nbp-skillforge" ]; then
+  forge_bin="node_modules/.bin/nbp-skillforge"
+elif command -v nbp-skillforge >/dev/null 2>&1; then
+  forge_bin="nbp-skillforge"          # global / PATH install
+else
+  echo "· drift-gate skipped: nbp-skillforge CLI not found locally (npm i -D nbp-skillforge to enable it)"
+  exit 0                              # the hook must never block commits when the tool isn't installed
+fi
+"$forge_bin" check || exit 1
+```
+
+`install-hooks` also nudges you here: when it refuses to replace a foreign hook (no `--force`)
+and that hook calls the forge via `npx` (old `nbp-forge` name included), it appends this pointer
+to the refusal message — non-fatal, your hook is left untouched.
 
 ## Why this exists
 

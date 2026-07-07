@@ -32,13 +32,28 @@ without a recipe is left untouched (and, with `enforceGenerated`, flagged as an 
   (composition lives in the recipe). A nested include is a **build error**; inline the content into
   the brick, or include both bricks from the recipe instead. An include directive inside a *brick's
   own* frontmatter is not affected (that block is dropped entirely — see Frontmatter).
-- An include directive on a line **inside a fenced code block** (```` ``` ```` or `~~~`, up to 3
-  leading spaces of indentation — CommonMark basics) is **left verbatim, not expanded**, and is
-  **not ref-counted** (a brick cited only inside such a fence is an orphan to `gc`) — so a
+- A **plain** include directive on a line **inside a fenced code block** (```` ``` ```` or `~~~`,
+  up to 3 leading spaces of indentation — CommonMark basics) is **left verbatim, not expanded**,
+  and is **not ref-counted** (a brick cited only inside such a fence is an orphan to `gc`) — so a
   recipe/brick can document the include syntax itself as a fenced example. An unterminated fence
   (opened, never closed) masks everything after it to the end of the file. Only block fences are
   recognized; an inline single-backtick code span (`` `<!-- include: … -->` ``) does **not** mask a
-  directive — it still expands.
+  directive — it still expands. The **bang form** (next bullet) is the deliberate exception.
+- **Bang form:** `<!-- include!: <brick-path> [| k=v ...] -->` expands **always — inside or
+  outside a fenced code block** (```` ``` ```` and `~~~` alike). It is the escape hatch for
+  factoring duplicated fence content (e.g. a subagent prompt embedded in a code block). The opt-in
+  is **per directive, at the point of use — never per fence**: a bang and a plain `include:` on
+  lines of the *same* fence behave independently (the bang expands, the plain one stays verbatim).
+  Outside a fence the bang is inert: the directive behaves **byte-identically** to a plain
+  `include:` (same parameters, same path-escape/symlink/case-match checks, same errors). A bang
+  directive is always **ref-counted**, even inside a fence — a brick consumed only via
+  bang-in-fence is *not* an orphan to `gc`, and `remove`'s exclusive sweep sees the consumer. A
+  bang directive inside a fence in a **brick's** body *would* be expanded, so it is a **real
+  nested include** → the same build error as the unfenced case, nothing written (a bang-less
+  fenced directive in a brick remains allowed — that's documentation). Syntax is strict: the `!`
+  must sit hard against `include` (`include!:`) — `include !:` is **not** a directive. Because the
+  bang expands even inside fences, the literal token cannot be written in a governed file — see
+  Known limitations.
 
 ## Frontmatter
 - **Recipe:** the frontmatter (`name`, `description`, …) is passed verbatim to the generated
@@ -51,7 +66,9 @@ without a recipe is left untouched (and, with `enforceGenerated`, flagged as an 
   **not** count toward a brick's reference count for `gc`/`remove`/`list`.
 - **Brick:** its own frontmatter is **dropped** on expansion — only the body is inlined. The fields
   are **advisory metadata for humans/agents reading the brick; the engine never validates them**
-  (only a recipe's `name`/`description` are validated — see Conformance). Recommended fields:
+  (only a recipe's `name`/`description` are validated — see Conformance). One field is *read* by
+  the lifecycle commands (`keep`, below) — but like every other field it is dropped on build and
+  never reaches the generated output. Recommended fields:
 
   | field | meaning |
   |---|---|
@@ -59,6 +76,7 @@ without a recipe is left untouched (and, with `enforceGenerated`, flagged as an 
   | `summary` | one line: what this brick contributes when included |
   | `kind` | optional tag for how it's used (e.g. `step`, `checklist`, `contract`) |
   | `guarantees-not` | optional: limits the brick explicitly does **not** promise (so a recipe author doesn't assume more than it delivers) |
+  | `keep` | `keep: true` **pins** the brick against auto-archival: exempt from `gc`'s orphan sweep and `remove`'s exclusive-brick sweep, even with `--hard` (see Lifecycle & ownership). For an intentionally-orphan brick, e.g. staging content not yet wired into a recipe. **Fail-closed:** only a well-formed `true` pins (unquoted, or quoted with *matching* quotes); any other value (`false`, `yes`, `"maybe"`, mismatched quotes), a missing field, no frontmatter at all, or an unreadable brick = **not pinned**. |
 
   Unknown fields are allowed and ignored. Since the whole block is dropped, nothing here reaches the
   generated file.
@@ -157,7 +175,7 @@ accepted but has no effect on their output.
 | `build` / `build --dry-run` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged, plan, destinations }` — `plan` is `[{ name, out, status }]`, one entry per (recipe × out) pair (`status`: `"create"` \| `"change"` \| `"same"`); `out` is **always present**, even single-destination, so consumers never branch on config shape. `destinations` = number of out entries. No `msg` field. |
 | `check` | `{ ok, drift, orphans, errors, warnings, count, written, unchanged, destinations }`. No `msg` field. |
 | `list` | `{ ok, skills, bricks, msg }` — `skills` is `[{ skill, bricks: [name, ...] }]`; `bricks` is `[{ brick, refCount, usedBy: [skill, ...] }]`. |
-| `gc` | `{ ok, orphans, applied, msg }` — `orphans` is `[brick, ...]`; `applied` is `true` only with `--apply`. |
+| `gc` | `{ ok, orphans, pinned, applied, msg }` — `orphans` is `[brick, ...]`; `pinned` is `[brick, ...]` (pinned orphans left untouched — always present, `[]` when none; additive, no pre-existing field changed); `applied` is `true` only with `--apply`. |
 
 `errors` entries are `{ kind, skill, msg }` (`kind` ∈ `"build"` \| `"conformance"` \| `"drift"` \|
 `"orphan"` \| `"config"`); `msg` is the same full text the non-json CLI prints.
@@ -173,6 +191,18 @@ accepted but has no effect on their output.
   `restore` brings them back. `gc` archives orphan bricks (ref-count 0) — except a file whose
   basename is a repo meta doc (`README`/`CHANGELOG`/`CONTRIBUTING`/`CODE_OF_CONDUCT`/`LICENSE`, any
   case, any depth under `bricks/`), which is documentation and is never flagged or archived.
+- **Pinned bricks** (`keep: true` in the brick's own frontmatter — see Frontmatter) are exempt
+  from **both** sweeps, even with `--hard`:
+  - `gc` never archives or deletes a pinned brick, even under `--apply --hard`. The pin is never
+    silent: `N pinned brick(s) kept: a, b` is appended to the message, and the `--json` result
+    gains an additive `pinned` array (existing fields and message text are unchanged when nothing
+    is pinned).
+  - `remove` keeps a pinned **exclusive** brick in the live tree (soft and `--hard` alike),
+    reporting it as `Kept (pinned): x.` in the message; the result gains an additive `pinned`
+    array. The brick then becomes a pinned *orphan*, which `gc` also keeps — coherent end to end:
+    `remove --hard` of a recipe does **not** delete its pinned bricks. A **shared** brick that
+    happens to be pinned is untouched by this: it is kept by the existing ref-count rule and
+    listed under `Kept (shared)`, not under pinned.
 - `deletePolicy: "soft" | "hard"` controls archive-vs-delete; `remove`/`gc` also take `--hard` to force
   a permanent delete for that one call.
 - `init` scaffolds a project: it writes `forge.config.json` only if absent, then seeds a sample
@@ -180,6 +210,12 @@ accepted but has no effect on their output.
   dirs, and none of the sample's targets already exist — so it is idempotent and never overwrites.
   It also installs the pre-commit hook best-effort (drift-gate + secret scan; non-fatal, never
   clobbers an existing hook, and only into the repo whose root is `root`); opt out with `--no-hooks`.
+  When `install-hooks` (no `--force`) refuses to touch an existing **foreign** pre-commit and that
+  hook invokes the forge **via `npx`** (either package name — the pre-rename `npx nbp-forge` is
+  matched too), a non-fatal hint is appended to the refusal message pointing at the LOCAL-ONLY
+  resolution pattern (see README "Pre-commit hook"): `npx --no-install` is silently ignored on
+  npm ≥ 9, so an npx-calling hook can hit the registry on every commit. The refusal itself, exit
+  behavior, and `--force` semantics are unchanged.
 - `list` is read-only: per skill, the bricks it includes; per brick, its ref-count and consumers.
 - `import <file>` onboards an existing skill **deterministically** (no LLM): it writes a recipe
   from the file's frontmatter + body verbatim, stripping a leading GENERATED banner so a re-import
@@ -219,7 +255,9 @@ root. Every file gets an explicit disposition — nothing is silently dropped:
   signature; detected AFTER frontmatter split). `excluded-has-recipe` — already governed.
   `excluded-forge-role` — nbp-skillforge's own tooling (frontmatter marker).
 - `skip-nested` (subfolders are v1 out of scope) · `skip-non-utf8` · `skip-include-like` (a
-  directive outside a fence would be expanded by the engine — no safe verbatim path) ·
+  directive the engine WOULD expand — a plain one outside a fence, or a bang `include!:` directive
+  **anywhere**, even inside a fence — no safe verbatim path; fencing no longer proves a file is
+  safe to onboard verbatim when the directive carries the bang) ·
   `skip-nonconformant` (a rename is PROPOSED, never applied — renaming changes the invocation
   name) · `skip-collision` (case-fold aware; also raised when a **byte-divergent** file with the
   same name already exists in another out dir — the build would overwrite it without a snapshot;
@@ -233,15 +271,43 @@ normalized axes) between each original and its rebuilt output — zero diff requ
 `onboard-report.md` inside the backup dir maps every file → disposition → gate verdict, with
 rollback instructions. Re-running is a clean no-op (everything is then `excluded-*`).
 
-**`--factor` (mechanical factoring, Fase A):** after the verbatim gate passes, byte-identical
-**heading sections** (a heading up to the next heading/EOF, fence-aware, ≥3 lines, containing no
-`{{param}}`) shared by ≥2 skills are extracted as `bricks/onboarded/<slug>-<sha8>.md` (name is
-deterministic: same content → same brick) and each recipe's section is swapped for the include —
-surrounding blank lines stay in the recipe, so the round-trip stays byte-identical. Every touched
-skill is re-gated; a failure **reverts that skill to verbatim** and drops a consumer-less brick.
+**`--factor` (mechanical factoring, Fase A):** after the verbatim gate passes, factoring runs at
+**two granularities**. First the section pass: byte-identical **heading sections** (a heading up
+to the next heading/EOF, fence-aware, ≥3 lines, containing no `{{param}}`) shared by ≥2 skills are
+extracted as `bricks/onboarded/<slug-of-heading>-<sha8-of-section>.md` (name is deterministic:
+same content → same brick) and each recipe's section is swapped for the include — surrounding
+blank lines stay in the recipe, so the round-trip stays byte-identical. A second **block pass**
+then factors the residuals the section pass left behind, at block granularity: blocks are
+blank-line-delimited AND fence-aware (a ```` ``` ````/`~~~` marker line delimits exactly like a
+blank line, so a block never crosses a fence boundary); a candidate block has ≥3 lines, no
+`{{param}}`, and **no include-like directive at all** — not even one only *documented* inside a
+fence (extracting it into a brick would strip the fence context and trip the engine's
+nested-include gate) — and must be byte-identical in ≥2 skills, or reuse a byte-identical
+pre-existing `onboarded/<slug>-<sha8>` brick. The swap emits ONE directive line that keeps the
+block's first-line indent: a plain `include:` outside a fence, the **bang** (`include!:`) inside
+one — so duplicated content **inside code fences** (e.g. subagent prompts) factors too. The brick
+stores the block verbatim (first-line indent included) and is named
+`onboarded/<slug-of-the-block's-first-line>-<sha8-of-block-bytes>.md`. Same safety story at both
+granularities: every touched skill is re-gated; a failure **reverts that skill to verbatim** and
+drops a consumer-less brick (a known self-reverting case: trailing whitespace on a block's LAST
+line — expansion trims the brick body). A squatted/unwritable brick path skips only THAT group —
+other groups (including blocks inside a squatted section) still factor at their own paths.
 Factoring never fails the run — worst case everything stays verbatim, reported as kept.
-Near-identical blocks are deliberately NOT factored (that semantic judgment is the assisted
-Fase B's job, human-approved).
+
+**Near-duplicate report (report-only):** under `--factor`, block groups whose FIRST line is
+byte-identical across ≥2 skills but whose bodies diverge are listed in a dedicated
+`onboard-report.md` section — `## near-duplicates (report-only — candidates for a {{param}}
+brick)`: the skills involved, a per-skill diff of **only the differing lines**, a mechanical
+`{{param}}` suggestion (longest common prefix/suffix of the variant lines; no suggestion when a
+variant lacks the line), and a note when the variants differ in line count. The scan covers ALL
+blocks (including ones inside sections the section pass factored — a third skill's variant of an
+already-factored section still surfaces) and the ordering is fully deterministic (groups by slug
+then first line, variants by body text, skills lexicographic). **Nothing is written besides the
+report** — near-identical blocks are deliberately NOT auto-parameterized (that semantic judgment
+is the assisted Fase B's job, human-approved, via `forge-onboard`). The onboard summary appends
+`; N near-duplicate group(s) reported (report-only — see the report)` only when N > 0 (otherwise
+byte-identical to before), and `--json` gains an additive `result.factoring.nearDups` array
+(`[{ slug, firstLine, skills, variants: [{ skills, lines }] }]`).
 
 **enforceGenerated auto-enable:** when the run ends 100% migrated (zero skips, zero gate
 failures, no un-governed stray in ANY out dir) and `enforceGenerated` was off, it is flipped to
@@ -296,3 +362,8 @@ unverified — the deterministic gates stay the judge.
 - Fence masking (see Include directive above) recognizes only ```` ``` ```` / `~~~` **block**
   fences. A 4-space-**indented** code block does not mask a directive (it still expands), and an
   inline single-backtick code span never masked one either — deliberate non-goals, not planned.
+- The literal token `include!:` **cannot be written in any governed file** (a recipe or a brick) —
+  not even inside a code fence, since the bang form expands there too (and inside a *brick* it
+  trips the nested-include gate instead). To document the bang syntax inside a governed file,
+  break the token — e.g. write `include<!>:` or split it across formatting. This SPEC and the
+  README are **not** governed files, which is why they can show the literal syntax.
