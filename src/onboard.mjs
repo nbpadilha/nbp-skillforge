@@ -417,6 +417,10 @@ export function installSkill({ root = process.cwd(), cfg = loadConfig(root) } = 
 
 // ── onboard: the orchestrator. `ts` is ALWAYS injected by the caller (P2 — determinism). ─────
 export function onboard({ root = process.cwd(), ts, apply = false, from, factor = false } = {}) {
+  // Backslash spelling of --from (Fable B6) only self-normalizes via join()/resolve() on win32 —
+  // POSIX treats `\` as a literal filename character, so `sub\cmd` silently scanned nothing.
+  // Fold to forward slashes up front so both the validation below and discover() agree cross-platform.
+  if (from) from = from.replace(/\\/g, "/");
   const cfg = loadConfig(root);
   const overlap = roleOverlapError(root, cfg);
   if (overlap) return { ok: false, msg: overlap };
