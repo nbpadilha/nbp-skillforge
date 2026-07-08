@@ -6,7 +6,49 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-07-08
+## [0.8.1] - 2026-07-08
+
+Safety/correctness patch — three findings from the athena refactor of 19 skills (feedback lot #3,
+grounded by execution). No breaking changes.
+
+### Added
+- **F-40 — integrity guard against unexpanded include directives + `minVersion` pin.** Two
+  defenses against a **stale local binary silently writing a broken skill** (the reported case: a
+  `node_modules` install older than the recipes doesn't recognize `include!:`, leaves it verbatim,
+  and `build` would write the literal `<!-- include!: … -->` into the command).
+  1. **Residual-directive guard (the real defense):** after composing, the output may never carry
+     an unexpanded include-family directive. A bang form (which always expands) or **any**
+     include-family comment left **outside** a fence is now a **blocking build error** naming the
+     skill — nothing is written — instead of a corrupt skill. A plain `include:` **documented
+     inside a fenced code block** stays legitimately verbatim (F-03), so there is no false
+     positive. The scan is deliberately broader than the expansion regex, so it also catches a
+     directive shape a *future* older binary won't recognize — it protects every version pair, not
+     just this one.
+  2. **`minVersion` in `forge.config.json`:** an optional version pin (e.g. `"minVersion":
+     "0.8.1"`); a binary older than it refuses to `build`/`check` up front (config error, nothing
+     composed) rather than mis-generating. Inherent limit (why the guard above is primary): a
+     binary predating this field ignores it, so `minVersion` only protects from the version that
+     introduces it forward.
+- **F-43 — `forge expand` (read-only preview).** Compose **without writing anything**, to inspect
+  a param-heavy include before `build` + `git diff`. One verb, two modes:
+  `forge expand <recipe>` prints the full generated skill (banner + expanded body — exactly what
+  `build` would write, routed through the same engine so the F-40 guard and every build error
+  surface); `forge expand <brick> --params "k=v; …"` expands a single brick with the given params.
+  Resolution: `--params` forces brick mode, otherwise an existing recipe wins, then a brick. The
+  preview shows the real substitution — the whitespace collapse of a mis-quoted value and a
+  literal `{single}` token appear right there. A `--json` citizen; output goes to stdout (pipeable).
+
+### Changed
+- **F-38 — quoted param values preserve inner whitespace.** Quotes now control **whitespace only**:
+  a value wrapped in **matching** quotes — `k="  spaced  "` or `k='…'` — keeps its inner whitespace
+  **verbatim**, so a leading space no longer collapses onto the adjacent brick text (the reported
+  `'48 hours'AND` bug is `'48 hours' AND …` with `filtro=" AND …"`). An **unquoted** value keeps the
+  historical trim (what makes `skill=fix; flags=--a --b` legible) — fully backward-compatible. Only
+  a **single clean wrapper** (a matching quote as the value's last char) is unwrapped, so
+  `k='a' 'b'` or an outer-quoted SQL string is never mis-stripped. Escapes are decoded in one pass
+  and apply inside quotes too: a literal `;` is `\;` (a raw `;` still splits, even within quotes), a
+  literal quote `\"`/`\'`, a literal backslash `\\` (correct even against a closing quote:
+  `k="a\\"` → `a\`); to keep literal surrounding quotes, escape the pair (`k=\'x\'`).
 
 ### Added
 - **F-33 — bang include (`<!-- include!: path | k=v -->`):** a directive that expands **always —
@@ -577,6 +619,7 @@ First public release (npm).
 - Documentation: `README.md`, `SPEC.md`, `SETUP.md`, `SECURITY.md`, and a runnable [`examples/`](examples/) project.
 
 [Unreleased]: https://github.com/nbpadilha/nbp-skillforge/compare/v0.8.0...HEAD
+[0.8.1]: https://github.com/nbpadilha/nbp-skillforge/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/nbpadilha/nbp-skillforge/compare/v0.7.3...v0.8.0
 [0.7.3]: https://github.com/nbpadilha/nbp-skillforge/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/nbpadilha/nbp-skillforge/compare/v0.7.1...v0.7.2

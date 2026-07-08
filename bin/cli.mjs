@@ -3,7 +3,7 @@
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { run } from "../src/compose.mjs";
+import { run, expand } from "../src/compose.mjs";
 import { create, remove, restore, gc, rename, init, list, importFile } from "../src/lifecycle.mjs";
 import { onboard, installSkill } from "../src/onboard.mjs";
 import { installHooks } from "../src/hooks.mjs";
@@ -13,6 +13,7 @@ const HELP = {
   check:   "check [--json] [--root <dir>]                 drift-gate: exit 1 if any output diverged/orphaned",
   init:    "init [--no-hooks] [--root <dir>]     scaffold config + dirs + a sample skill, and install the pre-commit hook",
   list:    "list [--json] [--root <dir>]                  show skills → bricks and per-brick ref-count (blast radius)",
+  expand:  "expand <name> [--params \"k=v; …\"] [--json] [--root <dir>]  preview (write NOTHING): a recipe's full composed output, or a single brick expanded with --params",
   new:     "new <skill> [--description <text>] [--root <dir>]  scaffold a new recipe, then build",
   import:  "import <file> [--name <n>] [--force] [--root <dir>]  onboard an existing SKILL.md/command as a recipe",
   onboard: "onboard [--apply] [--factor] [--variants] [--from <dir>] [--install-skill] [--json] [--root <dir>]  migrate the existing skills of the out dir into recipes (dry-run by default; --apply snapshots, imports, builds and gates; --factor also extracts byte-identical shared blocks as bricks; --variants (requires --factor) also materializes each near-duplicate group as a named variant family — onboarded/<slug>_NN, every version kept verbatim, unify into one {{param}} brick in Fase B; --install-skill materializes the forge-onboard agent skill for the assisted Fase B)",
@@ -27,12 +28,12 @@ function usage(cmd) {
   if (cmd && HELP[cmd]) { console.log("nbp-skillforge " + HELP[cmd]); return; }
   console.log("nbp-skillforge — compose portable agent skills from reusable bricks, with a drift-gate.\n");
   console.log("usage: nbp-skillforge <command> [options]   (docs/tables abbreviate this as `forge`)\n");
-  for (const k of ["build", "check", "init", "list", "new", "import", "onboard", "rename", "remove", "restore", "gc", "install-hooks", "help"]) console.log("  " + HELP[k]);
+  for (const k of ["build", "check", "init", "list", "expand", "new", "import", "onboard", "rename", "remove", "restore", "gc", "install-hooks", "help"]) console.log("  " + HELP[k]);
   console.log("\nPaths/options come from forge.config.json at the root (see SPEC.md).");
   // The --json roster and the pointer must match reality: onboard is a full --json citizen (the
   // finishJson path + jsonErr guard both include it), and the shape reference lives in SPEC.md —
   // README has no "JSON output" section (it deliberately defers config/JSON docs to the SPEC).
-  console.log("--json (build/check/list/gc/onboard only): print ONLY the machine-readable result (JSON.stringify(result, null, 2)) — no decorated lines. Exit code unchanged. See SPEC.md's \"JSON output (--json)\" section for the shape.");
+  console.log("--json (build/check/list/gc/onboard/expand only): print ONLY the machine-readable result (JSON.stringify(result, null, 2)) — no decorated lines. Exit code unchanged. See SPEC.md's \"JSON output (--json)\" section for the shape.");
 }
 
 const argv = process.argv.slice(2);
@@ -47,7 +48,7 @@ const die = (msg) => { console.error("✗ " + msg); process.exit(2); };
 // malformed invocation.
 const SHORT_FLAGS = new Set(["-h", "-v"]);
 const value = (a, i) => { const v = argv[i]; if (v === undefined || v.startsWith("--") || SHORT_FLAGS.has(v)) die(`${a} requires a value`); return v; };
-let root = process.cwd(), hard = false, apply = false, force = false, name, description, from, factor = false, variants = false, installSkillFlag = false, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false, wantJson = false, unknownFlag = null;
+let root = process.cwd(), hard = false, apply = false, force = false, name, description, from, factor = false, variants = false, installSkillFlag = false, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false, wantJson = false, unknownFlag = null, paramsRaw;
 const pos = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -55,6 +56,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--from") from = value(a, ++i);
   else if (a === "--name") name = value(a, ++i);
   else if (a === "--description") description = value(a, ++i);
+  else if (a === "--params") paramsRaw = value(a, ++i);
   else if (a === "--hard") hard = true;
   else if (a === "--apply") apply = true;
   else if (a === "--force") force = true;
@@ -83,7 +85,7 @@ if (wantVersion) {
 }
 if (wantHelp) { usage(pos[0]); process.exit(0); }
 if (unknownFlag) { // only now — --help/--version already won
-  if (wantJson && ["build", "check", "list", "gc", "onboard"].includes(cmd)) jsonErr(`unknown option: ${unknownFlag}`, 2);
+  if (wantJson && ["build", "check", "list", "gc", "onboard", "expand"].includes(cmd)) jsonErr(`unknown option: ${unknownFlag}`, 2);
   die(`unknown option: ${unknownFlag}`);
 }
 
@@ -159,6 +161,20 @@ switch (cmd) {
     finish(r);
     break;
   }
+  case "expand": {
+    if (!pos[1]) { if (wantJson) jsonErr(`usage: ${HELP.expand}`, 2); console.error(`usage: nbp-skillforge ${HELP.expand}`); process.exit(2); }
+    const r = expand({ root, name: pos[1], paramsRaw });
+    if (wantJson) finishJson(r);
+    // The composed preview goes to STDOUT verbatim (pipeable); diagnostics to stderr; a resolution
+    // failure (no such recipe/brick) prints its `✗ msg`. Exit code mirrors ok, like every command.
+    if (r.text !== undefined) process.stdout.write(r.text);
+    // Diagnostics ALL go to stderr so stdout stays a clean, pipeable preview (`forge expand … > f`).
+    if (r.errors?.length) for (const e of r.errors) console.error("  • " + e.msg);
+    if (r.warnings?.length) for (const w of r.warnings) console.error("  • " + w);
+    if (!r.ok && r.msg) console.error("✗ " + r.msg);
+    process.exit(r.ok ? 0 : 1);
+    break;
+  }
   case "new":     if (!pos[1]) finish({ ok: false, msg: `usage: ${HELP.new}` }); finish(create(pos[1], { root, description })); break;
   case "import":  if (!pos[1]) finish({ ok: false, msg: `usage: ${HELP.import}` }); finish(importFile(pos[1], { root, name, force })); break;
   case "remove":  if (!pos[1]) finish({ ok: false, msg: `usage: ${HELP.remove}` }); finish(remove(pos[1], { root, hard })); break;
@@ -197,7 +213,7 @@ switch (cmd) {
 }
 } catch (e) {
   if (!e?.userFacing) throw e; // unexpected/programming error → preserve the stack trace, crash loudly
-  if (wantJson && ["build", "check", "list", "gc", "onboard"].includes(cmd)) jsonErr(e.message, 1); // parseable error for --json consumers
+  if (wantJson && ["build", "check", "list", "gc", "onboard", "expand"].includes(cmd)) jsonErr(e.message, 1); // parseable error for --json consumers
   console.error("✗ " + e.message);
   process.exit(1);
 }

@@ -16,8 +16,20 @@ without a recipe is left untouched (and, with `enforceGenerated`, flagged as an 
 ```
 - `<brick-path>` is relative to `bricks/`, without `.md` (can be nested: `core/run-dir`).
 - Parameters after `|`, separated by `;` (a value may contain spaces).
-- A value may contain a **literal `;`** by escaping it as `\;`; a literal backslash is `\\`.
-  (Any other `\x` is left untouched, so Windows-style paths usually need no escaping.)
+- **Escapes** (decoded in one pass): a literal `;` is `\;`, a literal backslash is `\\`, and a
+  literal quote is `\"` / `\'`. Any other `\x` is left untouched, so Windows-style paths usually
+  need no escaping. A `\\` sitting against a quoted value's closing quote is correctly a literal
+  backslash, not an escaped quote (`k="a\\"` → `a\`).
+- **Quoted values (F-38):** quotes control **whitespace only**. An **unquoted** value is
+  **trimmed** (leading/trailing whitespace dropped — what keeps `skill=fix; flags=--a --b`
+  legible). Wrap the value in **matching** quotes — `k="  spaced  "` or `k='…'` — to keep its inner
+  whitespace **verbatim** (so `filtro=" AND x"` inlines a leading space instead of colliding with
+  the adjacent brick text). Only a value that is a **single clean wrapper** (a matching quote as its
+  very last character) is unwrapped — `k='a' 'b'` or an outer-quoted SQL string keeps its quotes,
+  never mis-stripped. The escapes above still apply **inside** quotes and are the *only* way to
+  carry a separator: a raw `;` splits parameters even within quotes, so write `\;` for a literal one
+  (`k=" a\; b"` → ` a; b`); a literal quote is `\"`/`\'`. To emit a value that is *itself* wrapped
+  in literal quotes, escape the pair: `k=\"x\"` / `k=\'x\'`.
 - In the brick body, `{{k}}` is replaced by the value. Missing parameter → **build error**
   (nothing is written). Missing brick → **build error**. A parameter passed by the recipe but not
   referenced by any `{{k}}` in the brick is a non-blocking **warning** (`build`/`check` still
@@ -57,6 +69,15 @@ without a recipe is left untouched (and, with `enforceGenerated`, flagged as an 
   must sit hard against `include` (`include!:`) — `include !:` is **not** a directive. Because the
   bang expands even inside fences, the literal token cannot be written in a governed file — see
   Known limitations.
+- **Residual-directive guard (F-40):** after composing, the output may **never** carry an
+  unexpanded include-family directive. A bang form (which always expands) or **any** include-family
+  comment left **outside** a fence is a **blocking build error** naming the skill — nothing is
+  written — never a corrupt skill emitted with a literal directive in it. A plain `include:`
+  *documented inside a fence* (the verbatim case above) is exempt, so there is no false positive.
+  The guard's scan is intentionally **broader** than the forms this engine expands, so it also
+  refuses a directive shape a **future** binary is too old to recognize — the invariant holds for
+  every version pair, not just the current one. This is the primary defense behind `minVersion`
+  (Config): it catches the *symptom* (a broken output) regardless of which binary produced it.
 
 ## Frontmatter
 - **Recipe:** the frontmatter (`name`, `description`, …) is passed verbatim to the generated
@@ -144,7 +165,8 @@ Optional; every field falls back to the default below when the file is absent or
   "archive": ".claude/forge/_archive",
   "deletePolicy": "soft",
   "enforceGenerated": false,
-  "conformance": true
+  "conformance": true,
+  "minVersion": null
 }
 ```
 - **`bricks` / `recipes` / `out` / `archive`** — the role dirs. Must be **distinct, non-nested**
@@ -163,12 +185,19 @@ Optional; every field falls back to the default below when the file is absent or
   non-recipe skills are left untouched).
 - **`conformance`** — when `true` (default), `build`/`check` validate a recipe's frontmatter against
   the agentskills SKILL.md standard (see Conformance). Set `false` to disable.
+- **`minVersion`** (F-40) — optional version pin (e.g. `"0.8.1"`). A `nbp-skillforge` binary
+  **older** than it refuses to `build`/`check` up front (a `config error`, nothing composed),
+  instead of a stale install mis-generating skills. Numeric `major.minor.patch` compare (a
+  pre-release suffix like `-rc.1` is ignored); a malformed value is itself a `config error`.
+  **Inherent limit:** a binary predating this field ignores it, so `minVersion` only protects from
+  the version that introduces it forward — the residual-directive guard (below) is the primary,
+  version-pair-agnostic defense. Default `null` (no pin).
 
 ## JSON output (`--json`)
-`forge build`/`check`/`list`/`gc`/`onboard` accept `--json`: stdout becomes **only**
+`forge build`/`check`/`list`/`gc`/`onboard`/`expand` accept `--json`: stdout becomes **only**
 `JSON.stringify(result, null, 2)` — no `✔`/`✗`/`  • ` decorated lines — for scripting/CI. The exit
 code is unchanged (`0` on success, `1`/`2` on failure). Error paths are covered: an invalid
-`forge.config.json` or an unknown flag on one of these five commands prints
+`forge.config.json` or an unknown flag on one of these commands prints
 `{ "ok": false, "error": "..." }` on stdout. A build/check result refused by a **config error**
 (role overlap, missing recipes dir) still carries the **full** result shape below — every
 aggregate field present and zeroed, `plan: []` on build — so a consumer never branches on a
@@ -184,6 +213,7 @@ accepted but has no effect on their output.
 | `gc` | `{ ok, orphans, pinned, suspectKeep, applied, msg }` — `orphans` is `[brick, ...]`; `pinned` is `[brick, ...]` (pinned orphans left untouched — always present, `[]` when none; additive, no pre-existing field changed); `suspectKeep` is `[brick, ...]` (sweep candidates whose `keep` field is present but malformed — warned, NOT pinned; always present, `[]` when none); `applied` is `true` only with `--apply`. |
 | `onboard` (dry-run) | `{ ok, applied: false, root, entries, msg }` — `entries` is one object per scanned file with its disposition (`status`, `reason`, optional `proposal`); entries also carry internal scan fields beyond the disposition (informative, not contractual). |
 | `onboard --apply` | `{ ok, applied, root, entries, backupDir, gate, enforced, factoring, warnings, msg }` — `gate` is the per-skill fidelity verdict; `factoring` is `{ factored, kept, nearDups, variants }` (present only with `--factor`); `enforced` is `true` when the run auto-enabled `enforceGenerated`. |
+| `expand` | `{ ok, text, mode, name, errors, warnings }` — `text` is the composed preview (recipe mode: the full generated skill; brick mode: the expanded brick body). `mode` is `"recipe"` \| `"brick"`. On a resolution failure (no such recipe/brick) `text` is absent and a `msg` names the miss. Writes nothing. |
 
 `errors` entries are `{ kind, skill, msg }` (`kind` ∈ `"build"` \| `"conformance"` \| `"drift"` \|
 `"orphan"` \| `"config"`); `msg` is the same full text the non-json CLI prints.
