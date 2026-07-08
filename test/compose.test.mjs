@@ -5,7 +5,7 @@ import { join, dirname } from "node:path";
 import { sep } from "node:path";
 import { symlinkSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { run, loadConfig, includesOf, splitFm, relFromBase, hasForgeRole, FORGE_ROLE_VALUE } from "../src/compose.mjs";
+import { run, loadConfig, includesOf, splitFm, relFromBase, hasForgeRole, FORGE_ROLE_VALUE, expand, cmpVersion, minVersionError } from "../src/compose.mjs";
 import { gc } from "../src/lifecycle.mjs";
 import { makeRoot, read, readRaw, has, outFile, recipe, brick, cleanup, write } from "./helpers.mjs";
 
@@ -1342,4 +1342,207 @@ test("Fable B9b: a directory squatting out/<name>.md is a structured build error
     assert.equal(r.ok, false);
     assert.ok(r.errors.some((e) => e.kind === "build" && /cannot read destination/.test(e.msg)), "clean structured error");
   } finally { cleanup(root); }
+});
+
+// ── F-38: quoted param values preserve inner whitespace verbatim (G1) ──────────────────────────
+test("F-38: a quoted value keeps its INNER whitespace (no collapse onto adjacent text)", () => {
+  const root = makeRoot({
+    bricks: { q: "…INTERVAL '48 hours'{{filtro}}\n" },
+    recipes: { r: "---\nname: r\ndescription: d.\n---\n# r\n<!-- include: q | filtro=\" AND status='fail'\" -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.map((e) => e.msg).join("; "));
+    assert.match(read(outFile(root, "r")), /'48 hours' AND status='fail'/);
+  } finally { cleanup(root); }
+});
+
+test("F-38: an UNQUOTED value is still trimmed (non-breaking) and quoted-vs-unquoted differ", () => {
+  const root = makeRoot({
+    bricks: { q: "X={{v}}=Y\n" },
+    recipes: { r: "---\nname: r\ndescription: d.\n---\n# r\n<!-- include: q | v=  spaced   -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.map((e) => e.msg).join("; "));
+    assert.match(read(outFile(root, "r")), /^X=spaced=Y$/m);
+  } finally { cleanup(root); }
+});
+
+test("F-38: single quotes work too, and \\\" / \\\\ escape the quote / backslash inside", () => {
+  const root = makeRoot({
+    bricks: { q: "A=[{{a}}] B=[{{b}}]\n" },
+    // a='  keeps spaces  '   b="say \"hi\""
+    recipes: { r: "---\nname: r\ndescription: d.\n---\n# r\n<!-- include: q | a='  keeps spaces  '; b=\"say \\\"hi\\\"\" -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.map((e) => e.msg).join("; "));
+    assert.match(read(outFile(root, "r")), /A=\[  keeps spaces  \] B=\[say "hi"\]/);
+  } finally { cleanup(root); }
+});
+
+// ── F-40 (part 2): minVersion pin + semver-lite compare ────────────────────────────────────────
+test("F-40: cmpVersion orders major.minor.patch and ignores a pre-release suffix", () => {
+  assert.equal(cmpVersion("0.8.1", "0.8.0"), 1);
+  assert.equal(cmpVersion("0.8.0", "0.8.1"), -1);
+  assert.equal(cmpVersion("1.0.0", "0.9.9"), 1);
+  assert.equal(cmpVersion("0.8.1", "0.8.1"), 0);
+  assert.equal(cmpVersion("0.8.1-rc.1", "0.8.1"), 0, "pre-release suffix ignored for the gate");
+});
+
+test("F-40: minVersionError — satisfied/undefined pass; too-old and malformed are config errors", () => {
+  assert.equal(minVersionError({}), null, "no pin → no error");
+  assert.equal(minVersionError({ minVersion: "0.0.1" }), null, "satisfied → no error");
+  assert.match(minVersionError({ minVersion: "99.0.0" }), /requires nbp-skillforge ≥ 99\.0\.0/);
+  assert.match(minVersionError({ minVersion: "latest" }), /must be a version string/);
+});
+
+test("F-40: build/check with a too-high minVersion refuse up front and write nothing", () => {
+  const root = makeRoot({
+    config: { minVersion: "99.0.0" },
+    recipes: { v: "---\nname: v\ndescription: d.\n---\n# v\nhi\n" },
+  });
+  try {
+    const b = run({ root, mode: "build" });
+    assert.equal(b.ok, false);
+    assert.equal(b.written, 0);
+    assert.ok(b.errors.some((e) => e.kind === "config" && /requires nbp-skillforge/.test(e.msg)));
+    assert.equal(has(outFile(root, "v")), false, "nothing written when the version gate refuses");
+    const c = run({ root, mode: "check" });
+    assert.equal(c.ok, false);
+    assert.ok(c.errors.some((e) => e.kind === "config" && /requires nbp-skillforge/.test(e.msg)));
+  } finally { cleanup(root); }
+});
+
+// ── F-40 (part 1): residual include-directive guard ────────────────────────────────────────────
+test("F-40: an include-family directive this binary can't expand is a build error, not written", () => {
+  const root = makeRoot({
+    recipes: { g: "---\nname: g\ndescription: d.\n---\n# g\n<!-- include+: future-thing -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, false);
+    assert.equal(r.written, 0);
+    assert.ok(r.errors.some((e) => e.kind === "build" && /unexpanded include directive left in output/.test(e.msg)));
+    assert.equal(has(outFile(root, "g")), false, "a broken skill is never written");
+  } finally { cleanup(root); }
+});
+
+test("F-40: a plain include DOCUMENTED inside a fence is NOT flagged (no false positive)", () => {
+  const root = makeRoot({
+    recipes: { d: "---\nname: d\ndescription: d.\n---\n# d\nSee:\n```\n<!-- include: some-brick -->\n```\ndone\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.map((e) => e.msg).join("; "));
+    assert.match(read(outFile(root, "d")), /<!-- include: some-brick -->/, "documentation survives verbatim");
+  } finally { cleanup(root); }
+});
+
+// ── F-43: forge expand — read-only preview (recipe full output, or a single brick + params) ─────
+test("F-43: expand a recipe returns the full composed skill and writes NOTHING", () => {
+  const root = makeRoot({
+    bricks: { g: "Hello {{who}}.\n" },
+    recipes: { hi: "---\nname: hi\ndescription: d.\n---\n# hi\n<!-- include: g | who=world -->\n" },
+  });
+  try {
+    const r = expand({ root, name: "hi" });
+    assert.equal(r.ok, true, r.errors?.map((e) => e.msg).join("; "));
+    assert.equal(r.mode, "recipe");
+    assert.match(r.text, /GENERATED by nbp-skillforge/);
+    assert.match(r.text, /Hello world\./);
+    assert.equal(has(outFile(root, "hi")), false, "expand never writes");
+  } finally { cleanup(root); }
+});
+
+test("F-43: expand a brick with --params substitutes; quoting fixes G1, and G2 {single} stays literal", () => {
+  const root = makeRoot({ bricks: { q: "'48h'{{filtro}} keep-{single}\n" } });
+  try {
+    const unq = expand({ root, name: "q", paramsRaw: "filtro= AND x" });
+    assert.equal(unq.ok, true);
+    assert.equal(unq.mode, "brick");
+    assert.match(unq.text, /'48h'AND x keep-\{single\}/, "unquoted collapses (visible in preview); {single} literal");
+    const quoted = expand({ root, name: "q", paramsRaw: 'filtro=" AND x"' });
+    assert.match(quoted.text, /'48h' AND x/, "quoted preserves the space");
+  } finally { cleanup(root); }
+});
+
+test("F-43: expand resolves recipe-first, --params forces brick mode, and an unknown name fails", () => {
+  const root = makeRoot({
+    bricks: { dup: "BRICK {{p}}\n" },
+    recipes: { dup: "---\nname: dup\ndescription: d.\n---\n# dup recipe\n" },
+  });
+  try {
+    assert.equal(expand({ root, name: "dup" }).mode, "recipe", "recipe wins when no --params");
+    assert.equal(expand({ root, name: "dup", paramsRaw: "p=x" }).mode, "brick", "--params forces brick");
+    const miss = expand({ root, name: "ghost" });
+    assert.equal(miss.ok, false);
+    assert.match(miss.msg, /no recipe or brick named "ghost"/);
+  } finally { cleanup(root); }
+});
+
+// ── Cross-vendor review regression pins (codex gpt-5.5 + agy), all adjudicated by execution ─────
+const valThrough = (root, paramsRaw) => {
+  write(brick(root, "vpin"), "[{{v}}]\n");
+  return expand({ root, name: "vpin", paramsRaw: "v=" + paramsRaw }).text.trim();
+};
+test("F-38 (review): a value that isn't a SINGLE clean wrapper keeps its quotes (no mis-strip)", () => {
+  const root = makeRoot({});
+  try {
+    // two separately-quoted words: starts and ends with ' but is NOT one wrapper → verbatim
+    assert.equal(valThrough(root, "'hello' 'world'"), "['hello' 'world']");
+    // an outer-quoted SQL string: the outer " are the wrapper (stripped), inner ' survive
+    assert.equal(valThrough(root, '"SELECT x WHERE n=\'a\'"'), "[SELECT x WHERE n='a']");
+  } finally { cleanup(root); }
+});
+test("F-38 (review): escape hatch \\'x\\' keeps literal quotes; quoted \\\\ == unquoted \\\\", () => {
+  const root = makeRoot({});
+  try {
+    assert.equal(valThrough(root, "'--track'"), "[--track]", "a bare wrapper unwraps");
+    assert.equal(valThrough(root, "\\'--track\\'"), "['--track']", "escaping the pair keeps the quotes");
+    assert.equal(valThrough(root, '"foo\\""'), '[foo"]', "an escaped closing quote decodes, not truncates");
+    assert.equal(valThrough(root, '"\\\\x"'), valThrough(root, "\\\\x"), "no double-decode: quoted and unquoted backslash agree");
+    // a value ENDING in a backslash inside the wrapper (`"a\\"` → a\) — the single-decode pass
+    // tells the literal backslash apart from an escaped closing quote; agrees with the unquoted form
+    assert.equal(valThrough(root, '"a\\\\"'), "[a\\]", "trailing backslash in a wrapper is literal");
+    assert.equal(valThrough(root, '"a\\\\"'), valThrough(root, "a\\\\"), "trailing-backslash quoted == unquoted");
+    // quotes control whitespace only — a literal ';' still needs `\;`, and the escape works inside a wrapper
+    assert.equal(valThrough(root, '" a\\; b"'), "[ a; b]", "\\; inside a wrapper → literal ;");
+  } finally { cleanup(root); }
+});
+test("F-40 (review): a plain-English comment starting with 'include'/'includes' is NOT flagged", () => {
+  const root = makeRoot({
+    recipes: {
+      eng: "---\nname: eng\ndescription: d.\n---\n# eng\n<!-- include the notes below -->\n<!-- includes: a, b, c -->\nbody\n",
+    },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, true, r.errors?.map((e) => e.msg).join("; "));
+  } finally { cleanup(root); }
+});
+test("F-40 (review): a residual directive with a `>` in its params is still caught", () => {
+  const root = makeRoot({
+    recipes: { gt: "---\nname: gt\ndescription: d.\n---\n# gt\n<!-- include+: future | expr=a > b -->\n" },
+  });
+  try {
+    const r = run({ root, mode: "build" });
+    assert.equal(r.ok, false);
+    assert.ok(r.errors.some((e) => e.kind === "build" && /unexpanded include directive/.test(e.msg)));
+  } finally { cleanup(root); }
+});
+test("F-43 (review): expand rejects a name that escapes the project with `..` (no arbitrary read)", () => {
+  const root = makeRoot({ recipes: { hi: "---\nname: hi\ndescription: d.\n---\n# hi\nhi\n" } });
+  write(join(root, "secret.md"), "TOP SECRET\n");
+  try {
+    const r = expand({ root, name: "../../secret" });
+    assert.equal(r.ok, false);
+    assert.equal(r.text, undefined, "no file content leaked");
+    assert.match(r.msg, /invalid name/);
+  } finally { cleanup(root); }
+});
+test("F-40 (review): minVersion with trailing garbage is a config error; a -rc suffix is valid", () => {
+  assert.match(minVersionError({ minVersion: "0.0.1 garbage" }), /must be a version string/);
+  assert.equal(minVersionError({ minVersion: "0.0.1-rc.1" }), null, "valid pre-release, satisfied");
 });

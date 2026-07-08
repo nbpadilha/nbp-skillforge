@@ -73,6 +73,16 @@ export const INCLUDE = /<!--\s*include(!?):\s*([^\s|]+)\s*(?:\|\s*([^]*?)\s*)?--
 // rule the engine applies — and so a future widening (F-27 param defaults) edits ONE regex.
 // Same global-regex caution as INCLUDE above.
 export const PLACEHOLDER_RE = /\{\{\s*([\w-]+)\s*\}\}/g;
+// F-40: scans the composed output for an UNEXPANDED include-family directive OPENER — broader than
+// INCLUDE (which only matches the forms THIS binary can expand) so it also catches a directive a
+// running binary is too OLD to recognize (athena's case: a stale 0.7.3 install doesn't understand
+// `include!:`, leaves it verbatim, and `build` would WRITE `<!-- include!: … -->` into the skill =
+// broken). Matches the directive HEAD only — `<!-- include<suffix>:` — which (a) REQUIRES the `:`
+// so a plain-English comment like `<!-- include the notes below -->` is NOT a false positive, (b)
+// uses `\b` so `<!-- includes: … -->` (a word, not a directive) doesn't match, and (c) never
+// consumes past the `:`, so a `>` inside the params (`… | a > b -->`) can't make the match miss.
+// Same global-regex caution as INCLUDE (matchAll/replace only).
+export const RESIDUAL_INCLUDE_RE = /<!--\s*include\b[^\s:>]*:/g;
 // F-31: frontmatter marker that stamps a file as nbp-skillforge's own tooling (e.g. the ephemeral
 // `forge-onboard` agent skill). Namespaced VALUE (not just the key) so a user's unrelated
 // `forge-role:` field never false-positives. `hasForgeRole` takes the ALREADY-SPLIT fm block
@@ -180,6 +190,35 @@ export function loadConfig(root) {
   return normalizeOut({ ...DEFAULTS, ...user });
 }
 
+// F-40 (part 2): the running binary's own version, read ONCE from the package it ships in. Used to
+// honor forge.config.json's optional `minVersion`. Read defensively — a missing/unreadable
+// package.json (never expected in a real install) leaves it null and the guard simply no-ops
+// rather than crashing a build over a self-diagnostic.
+let RUNNING_VERSION = null;
+try { RUNNING_VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version; } catch {}
+// Zero-dep semver-lite: compares the numeric major.minor.patch, ignoring any pre-release suffix
+// (`-rc.1`) — enough for the "is this binary new enough" gate (maintainer-authored minVersion is a
+// plain release like "0.8.1"). Returns -1 | 0 | 1.
+export function cmpVersion(a, b) {
+  const parse = (v) => String(v).split("-")[0].split(".").map((n) => parseInt(n, 10) || 0);
+  const pa = parse(a), pb = parse(b);
+  for (let i = 0; i < 3; i++) { const d = (pa[i] || 0) - (pb[i] || 0); if (d) return d < 0 ? -1 : 1; }
+  return 0;
+}
+// F-40 (part 2): if forge.config.json pins `minVersion`, a binary OLDER than it refuses to run
+// (build/check) instead of silently mis-generating with an engine the recipes weren't written for.
+// Inherent limitation (why part 1 — the residual guard — is the real defense): a binary predating
+// this field ignores it entirely, so minVersion only protects from the version that INTRODUCES it
+// forward. Returns a config-error string, or null when satisfied / not configured / undeterminable.
+export function minVersionError(cfg) {
+  if (cfg.minVersion === undefined || cfg.minVersion === null) return null;
+  if (typeof cfg.minVersion !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(cfg.minVersion.trim()))
+    return `forge.config.json: "minVersion" must be a version string like "0.8.1" (got ${JSON.stringify(cfg.minVersion)})`;
+  if (RUNNING_VERSION && cmpVersion(RUNNING_VERSION, cfg.minVersion.trim()) < 0)
+    return `forge.config.json requires nbp-skillforge ≥ ${cfg.minVersion.trim()}, but this binary is ${RUNNING_VERSION} — upgrade (e.g. \`npx nbp-skillforge@latest\`) or lower "minVersion"`;
+  return null;
+}
+
 // Brick paths included by a recipe's text (without .md). Basis for ref-counting. Backslashes are
 // normalized to '/' so a `core\run` include keys the same as `core/run` (and as mdFiles on Windows).
 export function includesOf(text) {
@@ -232,26 +271,77 @@ export const splitFm = (txt) => {
   const m = txt.match(/^---[ \t]*\n(?:([\s\S]*?)\n)?---[ \t]*(?:\n([\s\S]*))?$/);
   return { fm: m ? (m[1] ?? "") : null, body: m ? (m[2] ?? "") : txt };
 };
-// Split on ';' separators, honoring backslash escapes so a value can hold a literal ';'.
-// `\;` → literal ';' · `\\` → literal '\' · any other '\x' is left untouched.
+// Split on ';' separators, WITHOUT decoding — escapes are left intact for a SINGLE decode pass
+// later (unescapeParam, via parseValue). A ';' preceded by an ODD number of backslashes is escaped
+// (`\;`) and does not split; an even count (`\\;`) is an escaped backslash, so that ';' still
+// splits. Deferring the decode is what lets a `\\` sitting against a quoted value's closing quote
+// be told apart from an escaped quote (`\"`) — the two-pass version collapsed `\\`→`\` first and
+// then mis-read the lone `\` + `"` as an escaped quote, swallowing the real close (cross-vendor
+// review, adjudicated by execution).
 const splitParams = (raw) => {
   const parts = [];
-  let cur = "";
+  let cur = "", bs = 0;
   for (let i = 0; i < raw.length; i++) {
     const c = raw[i];
-    if (c === "\\" && (raw[i + 1] === ";" || raw[i + 1] === "\\")) cur += raw[++i]; // unescape
-    else if (c === ";") { parts.push(cur); cur = ""; }
-    else cur += c;
+    if (c === ";" && bs % 2 === 0) { parts.push(cur); cur = ""; bs = 0; continue; }
+    cur += c;
+    bs = c === "\\" ? bs + 1 : 0;
   }
   parts.push(cur);
   return parts;
+};
+// The ONE place param escapes are decoded: `\;`→';', `\\`→'\', `\"`→'"', `\'`→"'". Any other `\x`
+// is left as-is (so Windows-style paths rarely need escaping). Used for an unquoted value and as
+// the fall-through for a value that starts with a quote but isn't a single clean wrapper.
+const unescapeParam = (s) => s.replace(/\\([;\\"'])/g, "$1");
+// F-38: a param value CLEANLY wrapped in MATCHING quotes (`k="  spaced  "` or `k='…'`) keeps its
+// INNER text VERBATIM — leading/trailing whitespace included — so `filtro=" AND x"` stops
+// collapsing its leading space onto the adjacent brick text (the G1 bug: `'48 hours'AND`). An
+// UNQUOTED value keeps the historical trim (what makes `skill=fix; flags=--a --b` legible).
+//
+// "Cleanly wrapped" is decided by SCANNING for the matching closing quote, and unwrapping only when
+// that close is the value's LAST character — so a value that merely STARTS and ENDS with a quote but
+// isn't a single wrapper (`'hello' 'world'`, or an SQL string with inner quotes) is NOT mis-stripped
+// (it falls through to the unquoted branch, quotes preserved). Escapes are decoded in ONE pass — the
+// scan here decodes `\;`/`\\`/`\"`/`\'` inline as it walks, and unquoted values run the same decode
+// via unescapeParam — so a quoted `\\` and an unquoted `\\` yield the SAME single backslash, and a
+// `\\` against the closing quote is a literal backslash + a real close, never a mis-read `\"`. To
+// emit a value that is ITSELF wrapped in literal quotes, escape the pair (`k=\"x\"` / `k=\'x\'`):
+// the leading `\"` stops it being read as a wrapper and the unquoted decode turns `\"`/`\'` literal.
+const parseValue = (v) => {
+  const t = v.trim(); // `t` still carries raw escapes (splitParams no longer decodes)
+  const q = t[0];
+  if (q === '"' || q === "'") {
+    // Scan for the matching closing quote, decoding escapes as we go (`\<x>` consumes both chars).
+    // Because the decode happens HERE, in the same pass that finds the close, a `\\` right before
+    // the close (`"a\\"` → value `a\`) is correctly a literal backslash + a real closing quote —
+    // never mistaken for `\"` (an escaped quote). Only an UNescaped `q` at the LAST position makes
+    // it a clean single wrapper (verbatim inner, whitespace kept); anything else falls through.
+    let inner = "", i = 1, closed = false;
+    for (; i < t.length; i++) {
+      const c = t[i];
+      if (c === "\\" && i + 1 < t.length) {
+        const n = t[i + 1];
+        inner += (n === ";" || n === "\\" || n === '"' || n === "'") ? n : c + n; // decode or keep
+        i++;
+        continue;
+      }
+      if (c === q) { closed = true; break; }
+      inner += c;
+    }
+    if (closed && i === t.length - 1) return inner; // the close is the LAST char → a clean wrapper
+    // else: starts with a quote but isn't a single clean wrapper → treat as an unquoted value.
+  }
+  // Unquoted: whitespace already trimmed; a single decode of the `\;`/`\\`/`\"`/`\'` escapes. The
+  // `\"`/`\'` decode is what makes the literal-quote escape hatch (`\'x\'` → `'x'`) work.
+  return unescapeParam(t);
 };
 const parseParams = (raw) => {
   const out = {};
   if (raw) for (const part of splitParams(raw)) {
     const s = part.trim(); if (!s) continue;
     const i = s.indexOf("=");
-    out[i < 0 ? s : s.slice(0, i).trim()] = i < 0 ? "" : s.slice(i + 1).trim();
+    out[i < 0 ? s : s.slice(0, i).trim()] = i < 0 ? "" : parseValue(s.slice(i + 1));
   }
   return out;
 };
@@ -277,6 +367,86 @@ function firstDiffSuffix(expectedText, foundText) {
   return ""; // callers only invoke this when expectedText !== foundText, so this is unreachable
 }
 
+// F-43: the single brick-expansion unit — path safety, on-disk case match, no-nested-include gate,
+// and {{param}} substitution — factored out of compose()'s INCLUDE replacer so that BOTH `build`
+// and the read-only `forge expand <brick> --params …` preview run byte-identical logic (a preview
+// that diverged from what build emits would be worse than none). Returns the expanded brick body
+// (trimmed) or a `‹…›` sentinel, pushing a structured build error for every failure — exactly as
+// the inline code did. `p` is the raw include path, `rawP` the raw param string; `name` is the
+// owning skill/brick used only in error prefixes. Behavior-preserving extraction (the build's
+// byte-level tests pin that it did not drift).
+export function expandBrick(bricksAbs, p, rawP, name, errors, warnings) {
+  const bp = posix.normalize(p.trim().replace(/\\/g, "/"));
+  const file = join(bricksAbs, bp + ".md");
+  // Keep includes inside the bricks root — an absolute or `../` (post-normalization) path must
+  // not read (and inline) files outside bricks/, nor leave a path lifecycle code could move/delete.
+  if (isAbsolute(bp) || bp === ".." || bp.startsWith("../") || !isInside(resolve(file), resolve(bricksAbs))) {
+    errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include path escapes bricks/: ${bp}` }); return `‹UNSAFE INCLUDE: ${bp}›`;
+  }
+  if (!existsSync(file)) { errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include of missing brick: ${bp}` }); return `‹MISSING BRICK: ${bp}›`; }
+  // Keying stays case-sensitive (ref-count is not case-folded); instead require the include's
+  // case to match the on-disk file exactly, even on a case-insensitive FS (Windows/macOS) where
+  // existsSync() above would otherwise let a mismatched case silently through. Runs unconditionally
+  // (not gated by platform) so behavior never bifurcates by OS — on a case-sensitive FS the
+  // existsSync() check above already rejected a mismatch, so this is inert there.
+  try {
+    const realBase = realpathSync.native(bricksAbs);
+    const real = realpathSync.native(file);
+    // A-1: a symlink whose target resolves OUTSIDE bricks/ used to be silently followed (SPEC
+    // "out of scope"); the on-disk identity check now rejects it. Distinguish that from a real
+    // case mismatch — otherwise the message ("case mismatch (on-disk: <garbage suffix>)") is
+    // nonsensical for a target outside the tree. Rejecting a symlinked brick is intentional
+    // (coherent with lifecycle's insideBricks + deterministic build) — see SPEC.
+    if (!isInside(real, realBase)) {
+      errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include resolves outside bricks/ (symlink?): ${bp}` });
+      return `‹UNSAFE INCLUDE: ${bp}›`;
+    }
+    const relReal = relFromBase(realBase, real).replace(/\\/g, "/");
+    if (relReal !== bp + ".md") {
+      errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include path case mismatch: ${bp} (on-disk: ${relReal})` });
+      return `‹CASE MISMATCH: ${bp}›`;
+    }
+  } catch { errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include of missing brick: ${bp}` }); return `‹MISSING BRICK: ${bp}›`; }
+  const params = parseParams(rawP);
+  // A brick that exists but cannot be READ — a directory squatting `<name>.md` (EISDIR: it
+  // passes existsSync, realpath, and the case-match above), or a permissions failure — is an
+  // ENVIRONMENT problem, not a programming error: structured, blocking build error (nothing
+  // written project-wide), never a raw stack trace. Mirrors the destination-side EISDIR
+  // handling in run() (Fable B9) — the source side had no such symmetry until now.
+  let brickRaw;
+  try { brickRaw = readFileSync(file, "utf8"); }
+  catch (e) {
+    errors.push({ kind: "build", skill: name, msg: `build error: [${name}] cannot read brick ${bp} (${e.code ?? e.message}) — is it a directory?` });
+    return `‹UNREADABLE BRICK: ${bp}›`;
+  }
+  let b = splitFm(brickRaw.replace(/\r\n?/g, "\n")).body;
+  // Bricks must not include bricks (composition lives in the recipe, AGENTS.md's "no nesting"
+  // rule enforced as a gate) — use matchAll (NEVER .test()/.exec() on the shared module-level
+  // INCLUDE regex: it is global, so .test() would leave `lastIndex` dirty and corrupt a LATER,
+  // unrelated .matchAll(INCLUDE) call in the same process, e.g. ref-counting for another recipe).
+  // F-03: a brick that merely DOCUMENTS the include syntax inside a fence (e.g. explaining "how
+  // to use includes") is not a real nested include — same fence mask as the two consumers above.
+  // F-33: a BANG directive inside a brick's fence WOULD be expanded, so it is a real nested
+  // include → same build error (bang-less-in-fence stays allowed: it's documentation).
+  const isFencedBrick = fenceMasker(b);
+  INCLUDE.lastIndex = 0; // same defensive reset as includesOf — see the note there (F-31 export)
+  const nested = [...b.matchAll(INCLUDE)].filter((m) => m[1] === "!" || !isFencedBrick(m.index));
+  if (nested.length) {
+    const inner = posix.normalize(nested[0][2].trim().replace(/\\/g, "/"));
+    errors.push({ kind: "build", skill: name, msg: `build error: [${name}] brick ${bp} contains a nested include (${inner}) — bricks must not include bricks (inline the content or include both from the recipe)` });
+    return `‹NESTED INCLUDE: ${inner}›`;
+  }
+  const usedKeys = new Set();
+  b = b.replace(PLACEHOLDER_RE, (_, k) => {
+    usedKeys.add(k);
+    if (!(k in params)) { errors.push({ kind: "build", skill: name, msg: `build error: [${name}] brick ${bp} requires {{${k}}}, not provided by the recipe` }); return `‹NO ${k}›`; }
+    return params[k];
+  });
+  const unused = Object.keys(params).filter((k) => !usedKeys.has(k));
+  if (unused.length) warnings.push(`warning: [${name}] include ${bp}: unused param(s): ${unused.join(", ")}`);
+  return b.trim();
+}
+
 function compose(name, cfg, root, errors, warnings) {
   const bricksAbs = join(root, cfg.bricks);
   const raw = readFileSync(join(root, cfg.recipes, name + ".md"), "utf8").replace(/\r\n?/g, "\n");
@@ -290,76 +460,25 @@ function compose(name, cfg, root, errors, warnings) {
   const isFencedBody = fenceMasker(body);
   const out = body.replace(INCLUDE, (whole, bang, p, rawP, offset) => {
     if (!bang && isFencedBody(offset)) return whole;
-    const bp = posix.normalize(p.trim().replace(/\\/g, "/"));
-    const file = join(bricksAbs, bp + ".md");
-    // Keep includes inside the bricks root — an absolute or `../` (post-normalization) path must
-    // not read (and inline) files outside bricks/, nor leave a path lifecycle code could move/delete.
-    if (isAbsolute(bp) || bp === ".." || bp.startsWith("../") || !isInside(resolve(file), resolve(bricksAbs))) {
-      errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include path escapes bricks/: ${bp}` }); return `‹UNSAFE INCLUDE: ${bp}›`;
-    }
-    if (!existsSync(file)) { errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include of missing brick: ${bp}` }); return `‹MISSING BRICK: ${bp}›`; }
-    // Keying stays case-sensitive (ref-count is not case-folded); instead require the include's
-    // case to match the on-disk file exactly, even on a case-insensitive FS (Windows/macOS) where
-    // existsSync() above would otherwise let a mismatched case silently through. Runs unconditionally
-    // (not gated by platform) so behavior never bifurcates by OS — on a case-sensitive FS the
-    // existsSync() check above already rejected a mismatch, so this is inert there.
-    try {
-      const realBase = realpathSync.native(bricksAbs);
-      const real = realpathSync.native(file);
-      // A-1: a symlink whose target resolves OUTSIDE bricks/ used to be silently followed (SPEC
-      // "out of scope"); the on-disk identity check now rejects it. Distinguish that from a real
-      // case mismatch — otherwise the message ("case mismatch (on-disk: <garbage suffix>)") is
-      // nonsensical for a target outside the tree. Rejecting a symlinked brick is intentional
-      // (coherent with lifecycle's insideBricks + deterministic build) — see SPEC.
-      if (!isInside(real, realBase)) {
-        errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include resolves outside bricks/ (symlink?): ${bp}` });
-        return `‹UNSAFE INCLUDE: ${bp}›`;
-      }
-      const relReal = relFromBase(realBase, real).replace(/\\/g, "/");
-      if (relReal !== bp + ".md") {
-        errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include path case mismatch: ${bp} (on-disk: ${relReal})` });
-        return `‹CASE MISMATCH: ${bp}›`;
-      }
-    } catch { errors.push({ kind: "build", skill: name, msg: `build error: [${name}] include of missing brick: ${bp}` }); return `‹MISSING BRICK: ${bp}›`; }
-    const params = parseParams(rawP);
-    // A brick that exists but cannot be READ — a directory squatting `<name>.md` (EISDIR: it
-    // passes existsSync, realpath, and the case-match above), or a permissions failure — is an
-    // ENVIRONMENT problem, not a programming error: structured, blocking build error (nothing
-    // written project-wide), never a raw stack trace. Mirrors the destination-side EISDIR
-    // handling in run() (Fable B9) — the source side had no such symmetry until now.
-    let brickRaw;
-    try { brickRaw = readFileSync(file, "utf8"); }
-    catch (e) {
-      errors.push({ kind: "build", skill: name, msg: `build error: [${name}] cannot read brick ${bp} (${e.code ?? e.message}) — is it a directory?` });
-      return `‹UNREADABLE BRICK: ${bp}›`;
-    }
-    let b = splitFm(brickRaw.replace(/\r\n?/g, "\n")).body;
-    // Bricks must not include bricks (composition lives in the recipe, AGENTS.md's "no nesting"
-    // rule enforced as a gate) — use matchAll (NEVER .test()/.exec() on the shared module-level
-    // INCLUDE regex: it is global, so .test() would leave `lastIndex` dirty and corrupt a LATER,
-    // unrelated .matchAll(INCLUDE) call in the same process, e.g. ref-counting for another recipe).
-    // F-03: a brick that merely DOCUMENTS the include syntax inside a fence (e.g. explaining "how
-    // to use includes") is not a real nested include — same fence mask as the two consumers above.
-    // F-33: a BANG directive inside a brick's fence WOULD be expanded, so it is a real nested
-    // include → same build error (bang-less-in-fence stays allowed: it's documentation).
-    const isFencedBrick = fenceMasker(b);
-    INCLUDE.lastIndex = 0; // same defensive reset as includesOf — see the note there (F-31 export)
-    const nested = [...b.matchAll(INCLUDE)].filter((m) => m[1] === "!" || !isFencedBrick(m.index));
-    if (nested.length) {
-      const inner = posix.normalize(nested[0][2].trim().replace(/\\/g, "/"));
-      errors.push({ kind: "build", skill: name, msg: `build error: [${name}] brick ${bp} contains a nested include (${inner}) — bricks must not include bricks (inline the content or include both from the recipe)` });
-      return `‹NESTED INCLUDE: ${inner}›`;
-    }
-    const usedKeys = new Set();
-    b = b.replace(PLACEHOLDER_RE, (_, k) => {
-      usedKeys.add(k);
-      if (!(k in params)) { errors.push({ kind: "build", skill: name, msg: `build error: [${name}] brick ${bp} requires {{${k}}}, not provided by the recipe` }); return `‹NO ${k}›`; }
-      return params[k];
-    });
-    const unused = Object.keys(params).filter((k) => !usedKeys.has(k));
-    if (unused.length) warnings.push(`warning: [${name}] include ${bp}: unused param(s): ${unused.join(", ")}`);
-    return b.trim();
+    return expandBrick(bricksAbs, p, rawP, name, errors, warnings);
   });
+  // F-40 (part 1 — the real defense): the composed body must never carry an UNEXPANDED
+  // include-family directive. A recipe/brick may legitimately DOCUMENT plain `include:` syntax
+  // inside a fenced code block (F-03 verbatim), so a bang-LESS directive that lands inside a fence
+  // is allowed; a BANG form (always expands) or ANY include-family directive OUTSIDE a fence
+  // should have expanded — a residual one means this binary didn't recognize it (too OLD, or a
+  // bug), so we REFUSE to emit a broken skill instead of writing the literal directive out. This
+  // fires in THIS binary only as an invariant assertion (it always expands what it knows); its
+  // real value is protecting every FUTURE version pair — a binary too old to expand a newer
+  // directive shape errors here rather than silently writing garbage (athena's `include!:` case).
+  const outMasked = fenceMasker(out);
+  RESIDUAL_INCLUDE_RE.lastIndex = 0;
+  for (const m of out.matchAll(RESIDUAL_INCLUDE_RE)) {
+    const bang = /^<!--\s*include!/.test(m[0]); // the bang form sits hard against `include`
+    if (!bang && outMasked(m.index)) continue;  // plain include documented inside a fence — legit
+    const snip = out.slice(m.index).split("\n", 1)[0]; // the residual directive's whole line
+    errors.push({ kind: "build", skill: name, msg: `build error: [${name}] unexpanded include directive left in output (${snip.length > 70 ? snip.slice(0, 70) + "…" : snip}) — this nbp-skillforge binary may be older than the recipe needs; upgrade (e.g. \`npx nbp-skillforge@latest\`) and rebuild` });
+  }
   // fm === "" (present but empty) must NOT insert a blank line between the two fences.
   const head = fm === null ? `${BANNER(name, cfg.recipes)}\n` : `---\n${fm}${fm ? "\n" : ""}---\n${BANNER(name, cfg.recipes)}\n`;
   return head + out.replace(/\s*$/, "") + "\n";
@@ -414,6 +533,10 @@ export function run({ root = process.cwd(), mode = "build", dryRun = false } = {
     plan: mode === "build" ? [] : undefined, // mirrors the happy path: plan is a build-only field
     destinations: cfg.outs.length,
   });
+  // F-40 (part 2): a version pin is checked BEFORE anything is composed — a binary too old for the
+  // recipes refuses up front (build/check both) rather than mis-generating. Same config-error shape.
+  const vErr = minVersionError(cfg);
+  if (vErr) return configErr(vErr);
   const overlap = roleOverlapError(root, cfg);
   if (overlap) return configErr(overlap);
   if (!existsSync(recipesAbs)) return configErr(`no recipes directory: ${cfg.recipes} — run \`npx nbp-skillforge init\` to scaffold a forge project`);
@@ -517,4 +640,50 @@ export function run({ root = process.cwd(), mode = "build", dryRun = false } = {
     // DECISION 6: the CLI appends "across N destination(s)" to the build summary only when N > 1.
     destinations: cfg.outs.length,
   };
+}
+
+// F-43: read-only preview — compose WITHOUT writing anything to disk, so a param-heavy include can
+// be inspected before `build` + `git diff`. Two modes on ONE verb:
+//   • recipe mode (`forge expand <recipe>`): the full generated skill (banner + expanded body),
+//     exactly what build would write — routed through compose(), so the F-40 residual guard and
+//     every build error surface here too.
+//   • brick mode (`forge expand <brick> --params k=v; …`): a single brick expanded with the given
+//     params, via the SAME expandBrick() build uses — so the preview shows the real substitution
+//     (G1 collapsed whitespace, G2 `{single}` left literal) with no divergence from build.
+// Resolution when the caller doesn't force a mode: `--params` given → brick; else an existing
+// recipe wins; else an existing brick; else an error. Returns { ok, text?, mode, name, errors,
+// warnings, msg? } — `text` is the composed output (absent only when the name resolved to nothing).
+export function expand({ root = process.cwd(), name, paramsRaw, mode } = {}) {
+  const cfg = loadConfig(root);
+  const errors = [], warnings = [];
+  // `name` here is USER input (unlike build, which only ever sees names from readdirSync of the
+  // role dirs) — so it must be contained. Reject an absolute path or one that climbs out with `..`
+  // before it can resolve `recipes/../../secret` and preview a file outside the project. (Brick
+  // mode is also guarded again inside expandBrick, but recipe mode routes straight to compose(),
+  // which trusts its name — so the gate lives here, covering both.) A nested name (`core/run`) is
+  // fine: it normalizes without a leading `../`.
+  const npath = typeof name === "string" ? posix.normalize(name.replace(/\\/g, "/")) : "";
+  if (!npath || isAbsolute(name) || npath === ".." || npath.startsWith("../")) {
+    return { ok: false, name, errors, warnings, msg: `expand: invalid name "${name}" (must stay inside the project)` };
+  }
+  const recipeFile = join(root, cfg.recipes, name + ".md");
+  const brickFile = join(root, cfg.bricks, name + ".md");
+  let resolved = mode;
+  if (!resolved) resolved = paramsRaw !== undefined ? "brick" : existsSync(recipeFile) ? "recipe" : existsSync(brickFile) ? "brick" : null;
+  if (resolved === "recipe") {
+    if (!existsSync(recipeFile)) return { ok: false, mode: "recipe", name, errors, warnings, msg: `expand: no recipe "${name}" in ${cfg.recipes}/` };
+    let text;
+    try { text = compose(name, cfg, root, errors, warnings); }
+    catch (e) { return { ok: false, mode: "recipe", name, errors, warnings, msg: `expand: cannot read recipe "${name}" (${e.code ?? e.message})` }; }
+    const ok = !errors.some((e) => e.kind === "build" || e.kind === "conformance");
+    return { ok, text, mode: "recipe", name, errors, warnings };
+  }
+  if (resolved === "brick") {
+    if (!existsSync(brickFile)) return { ok: false, mode: "brick", name, errors, warnings, msg: `expand: no brick "${name}" in ${cfg.bricks}/` };
+    const bricksAbs = join(root, cfg.bricks);
+    const text = expandBrick(bricksAbs, name, paramsRaw ?? "", name, errors, warnings);
+    const ok = !errors.some((e) => e.kind === "build");
+    return { ok, text: text + "\n", mode: "brick", name, errors, warnings };
+  }
+  return { ok: false, name, errors, warnings, msg: `expand: no recipe or brick named "${name}"` };
 }
