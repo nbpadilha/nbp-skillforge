@@ -155,6 +155,42 @@ export function fenceMasker(text) {
   };
 }
 
+// ── Block segmentation (shared base: onboard's --factor pass AND lifecycle's `promote`, F-36) ──
+// Segments a recipe BODY into heading-sections (a heading line up to — not including — the next
+// heading; plus a preamble block before the first heading). Fence-aware: a `# ...` line inside a
+// code fence is content, not a heading. Line-based; returns { lines, blocks, offsets, isFenced }
+// where each block is { heading, start, end } over the half-open line range [start, end). The
+// `offsets` (char offset per line) + `isFenced` are exposed (additively) so a caller reuses THIS
+// body's fence mask — F-33 parity — instead of recomputing it: one mask per body, engine rules.
+// Lives here (not onboard.mjs) so lifecycle.mjs can import it too without an onboard→lifecycle
+// import cycle (onboard already imports FROM lifecycle).
+export function segmentBlocks(body) {
+  const lines = body.split("\n");
+  const isFenced = fenceMasker(body);
+  // Map each line index to its char offset so the fence mask (offset-based) applies per line.
+  const offsets = [0];
+  for (const l of lines) offsets.push(offsets[offsets.length - 1] + l.length + 1);
+  const heads = [];
+  // 0–3 leading spaces: CommonMark's ATX-heading indentation allowance — mirrors FENCE_RE.
+  for (let i = 0; i < lines.length; i++) if (/^ {0,3}#{1,6} /.test(lines[i]) && !isFenced(offsets[i])) heads.push(i);
+  const blocks = [];
+  if (heads.length === 0 || heads[0] > 0) blocks.push({ heading: null, start: 0, end: heads[0] ?? lines.length });
+  for (let h = 0; h < heads.length; h++) blocks.push({ heading: lines[heads[h]], start: heads[h], end: heads[h + 1] ?? lines.length });
+  return { lines, blocks, offsets, isFenced };
+}
+
+// The CORE of a block = its lines minus leading/trailing blank lines. The core (exact bytes,
+// joined by \n) is both the dedup key and the future brick body — compose inlines `b.trim()`, so
+// keeping the surrounding blank lines in the RECIPE (never in the brick) is what makes the
+// factored/promoted round-trip byte-identical. No per-line normalization: near-identical is Fase
+// B's job. Returns { coreStart, coreEnd, text } (coreEnd exclusive) or null for an all-blank span.
+export function blockCore(lines, start, end) {
+  let a = start, b = end - 1;
+  while (a <= b && lines[a].trim() === "") a++;
+  while (b >= a && lines[b].trim() === "") b--;
+  return a > b ? null : { coreStart: a, coreEnd: b + 1, text: lines.slice(a, b + 1).join("\n") };
+}
+
 // F-26: `out` accepts string | non-empty array of non-empty strings. Validation lives HERE (the
 // one place that branches on the shape) — before this guard, `"out": ["a","b"]` reached
 // node:path's join() unguarded and crashed every command with a raw TypeError. The derived
@@ -354,7 +390,9 @@ const parseParams = (raw) => {
 // side reports "end-of-file" instead of an excerpt, symmetrically in either direction.
 const DIFF_EXCERPT_LEN = 60;
 const diffExcerpt = (s) => (s === undefined ? "end-of-file" : `"${s.length > DIFF_EXCERPT_LEN ? s.slice(0, DIFF_EXCERPT_LEN) + "…" : s}"`);
-function firstDiffSuffix(expectedText, foundText) {
+// Exported (F-36): lifecycle's `promote` reuses it to point at the diverging line when a
+// promotion's round-trip gate fails — the same diagnostic the drift-gate shows.
+export function firstDiffSuffix(expectedText, foundText) {
   const expectedLines = expectedText.split("\n");
   const foundLines = foundText.split("\n");
   const n = Math.max(expectedLines.length, foundLines.length);
@@ -447,7 +485,10 @@ export function expandBrick(bricksAbs, p, rawP, name, errors, warnings) {
   return b.trim();
 }
 
-function compose(name, cfg, root, errors, warnings) {
+// Exported (F-36): lifecycle's `promote` composes a single skill's output in memory, before and
+// after the recipe rewrite, so its byte-identical gate judges exactly what `build` would emit —
+// no divergent reimplementation of the compose path. `errors`/`warnings` are caller-owned arrays.
+export function compose(name, cfg, root, errors, warnings) {
   const bricksAbs = join(root, cfg.bricks);
   const raw = readFileSync(join(root, cfg.recipes, name + ".md"), "utf8").replace(/\r\n?/g, "\n");
   const { fm, body } = splitFm(raw);

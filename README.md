@@ -92,6 +92,7 @@ npx nbp-skillforge check         # drift-gate: exit 1 if any output diverged (fo
 npx nbp-skillforge onboard       # migrate an existing skill library: dry-run report; --apply executes
 npx nbp-skillforge import <file> # onboard a single existing SKILL.md/command as a recipe, then `build`
 npx nbp-skillforge expand <name> # preview (write nothing): a recipe's full output, or a brick + --params
+npx nbp-skillforge promote <r> --to <brick> --heading "### X"  # extract a section into a reusable brick + include (byte-identical or it reverts)
 npx nbp-skillforge help          # every command; `help <command>` for one
 # prefer a global install? npm i -g nbp-skillforge  →  then just `nbp-skillforge build`
 ```
@@ -109,6 +110,7 @@ A complete runnable project lives in [`examples/`](examples/). Setting it up wit
 - **Soft-delete by default.** `remove`/`gc` archive to `_archive/` (recoverable via `forge restore` or plain git); opt into hard deletes only if you want them.
 - **Pinned bricks are never auto-archived.** A brick with `keep: true` in its frontmatter survives `gc`'s orphan sweep and `remove`'s exclusive-brick sweep — even with `--hard` — and the keep is always reported (`pinned` also appears in the `--json` results).
 - **A stale binary can't write a broken skill.** If a directive an older install doesn't understand would otherwise be emitted verbatim, `build` fails instead — and `forge.config.json`'s optional `minVersion` refuses an under-version binary up front. See F-40 in [`SPEC.md`](SPEC.md).
+- **Promoting a section can't corrupt a skill.** `forge promote` extracts a recipe section into a brick under an all-or-nothing byte-identity gate: if the round-trip wouldn't be identical, everything reverts — recipe restored verbatim, the new brick deleted. It never overwrites an existing brick (no `--force`).
 - **A pre-commit hook** (installed by `init`, best-effort, never clobbers an existing hook) runs the drift-gate *and* a basic secret scan before every commit — see [Pre-commit hook](#pre-commit-hook) below.
 
 The full command lifecycle, `forge.config.json` options, conformance rules, `--json` output shapes, and the safety/boundary model are documented in **[`SPEC.md`](SPEC.md)**. Common adoption pitfall and the shared-brick blast radius: [`SETUP.md`](SETUP.md) · [`SECURITY.md`](SECURITY.md). Visual overview: [`docs/architecture.html`](docs/architecture.html).

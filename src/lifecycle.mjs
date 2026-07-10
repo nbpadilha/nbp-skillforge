@@ -3,8 +3,9 @@
 // (ref-count would drop to 0); shared bricks stay. Everything is recoverable (versioned).
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync, rmdirSync, renameSync, realpathSync, statSync } from "node:fs";
-import { join, dirname, basename, relative, resolve, sep } from "node:path";
-import { loadConfig, run, includesOf, brickConsumers, splitFm, isConformantName, GENERATED_BANNER_RE, hasForgeRole, roleOverlapError } from "./compose.mjs";
+import { join, dirname, basename, relative, resolve, sep, isAbsolute, posix } from "node:path";
+import { loadConfig, run, includesOf, brickConsumers, splitFm, isConformantName, GENERATED_BANNER_RE, hasForgeRole, roleOverlapError,
+  compose, firstDiffSuffix, segmentBlocks, blockCore, RESIDUAL_INCLUDE_RE, PLACEHOLDER_RE, minVersionError } from "./compose.mjs";
 import { installHooks } from "./hooks.mjs";
 import { canonFold, isInside, allDistinct } from "./paths.mjs";
 
@@ -85,6 +86,52 @@ function unsafeName(skill) {
   if (!skill || skill === "." || skill === ".." || skill !== basename(skill) ||
       /[<>:"/\\|?*]/.test(skill) || [...skill].some((c) => c.charCodeAt(0) < 32) || RESERVED_DEVICE.test(skill))
     return `invalid skill name "${skill}" (single path segment only — no / \\ : * ? " < > | control chars, or reserved device names)`;
+  return null;
+}
+
+// The WRITE-side traversal guard for a NOT-YET-EXISTING brick path. `resolvesInside` alone falls
+// back to a purely LEXICAL check when the leaf doesn't exist (nothing to realpath) — so a symlinked
+// `bricks/<subdir>` pointing outside the tree would pass lexically and then `writeFileSync` would
+// land the new brick OUTSIDE bricks/ (cross-vendor review HIGH, both vendors). Fix: realpath the
+// NEAREST EXISTING ancestor of the target and require IT to resolve inside bricks/. When bricks/
+// itself doesn't exist yet (fresh project) the nearest ancestor is at/above bricks/, so there is no
+// in-tree symlink to hijack the write — safe, return true.
+//
+// The BOUNDARY is realpath(bricks) — identical to expandBrick's read-side guard (compose.mjs). So a
+// symlinked bricks ROOT (the whole `cfg.bricks` dir is a symlink to elsewhere) is HONORED, not
+// blocked: it is the user's configured brick location, and `build`/`onboard` already read and write
+// through it (proven by execution) — refusing it in `promote` alone would be an inconsistent
+// regression against the rest of the engine. What this blocks is the meaningful, `--to`-controlled
+// attack: a symlinked SUBDIR under an otherwise-normal bricks/ whose realpath escapes the tree
+// (re-review HIGH adjudicated by execution — the root-is-a-symlink case is by design, not an escape).
+function writeStaysInside(baseDir, target) {
+  let cur = resolve(target);
+  while (!existsSync(cur) && dirname(cur) !== cur) cur = dirname(cur);
+  const base = resolve(baseDir);
+  // The nearest existing ancestor is at/above baseDir → baseDir will be created fresh, nothing to
+  // traverse through. Only when it sits strictly INSIDE baseDir must it also realpath inside.
+  if (!(cur === base || cur.startsWith(base + sep))) return true;
+  return resolvesInside(baseDir, cur);
+}
+
+// F-36: a promote `--to` brick path MAY be nested (`core/deploy`) — unlike a skill name — but must
+// still stay a safe, in-tree file: no traversal (`..`/`.`) or absolute path, each segment a valid
+// filename (the same char/device rules unsafeName enforces), and — even through a symlink — it must
+// resolve inside bricks/. This is the WRITE-side mirror of expandBrick's include-path safety.
+function unsafeBrickPath(P, to) {
+  if (!to || typeof to !== "string") return "promote: --to <brick-path> is required";
+  // Refuse a `..` segment on the RAW path — before posix.normalize collapses `a/../b` to `b`, which
+  // would otherwise be silently accepted (a surprising, traversal-shaped input; cross-vendor LOW).
+  const rawSegs = to.replace(/\\/g, "/").split("/");
+  const norm = posix.normalize(to.replace(/\\/g, "/"));
+  const segs = norm.split("/");
+  if (isAbsolute(to) || norm.startsWith("/") || rawSegs.includes("..") || rawSegs.includes(".") || segs.includes("..") || segs.includes("."))
+    return `promote: invalid --to "${to}" (must stay inside ${P.cfg.bricks}/ — no "..", ".", or absolute path)`;
+  for (const s of segs)
+    if (!s || /[<>:"\\|?*]/.test(s) || [...s].some((c) => c.charCodeAt(0) < 32) || RESERVED_DEVICE.test(s))
+      return `promote: invalid --to "${to}" (segment "${s}" is not a valid path segment)`;
+  if (!writeStaysInside(P.bricks, join(P.bricks, norm + ".md")))
+    return `promote: --to "${to}" escapes ${P.cfg.bricks}/ (a symlinked path component points outside the tree)`;
   return null;
 }
 
@@ -583,4 +630,166 @@ export function rename(oldName, newName, { root = process.cwd() } = {}) {
   const r = run({ root, mode: "build" });
   const actionMsg = `skill "${oldName}" → "${newName}" (old command removed, new one generated).`;
   return { ok: r.ok, command: { ok: true, msg: actionMsg }, build: r, errors: r.errors, warnings: r.warnings, msg: composeMsg(actionMsg, r) };
+}
+
+// ── promote (F-36): extract a section of ONE recipe into a reusable brick ─────────────────────
+// The curated, deterministic recipe→brick refactor, all-or-nothing under a byte-identity gate: the
+// selected span leaves the recipe, a new brick is born holding it, the recipe gets the matching
+// include directive — and the skill's composed output must come out BYTE-IDENTICAL to before, or
+// EVERYTHING reverts (recipe restored verbatim, the just-written brick deleted). This is the verb
+// that replaces the manual copy→create→edit-include→hope-it-doesn't-drift dance (exactly where the
+// athena consumer improvised its parallel BLK-* system); the gate is the same fidelity judge the
+// drift-gate and onboard --factor use. Load-bearing (edits a user recipe) → cross-vendor reviewed.
+//
+// Selector: exactly ONE of --heading "### X" (PREFERRED — the heading-section whose heading line
+// matches after trim; robust to line edits; ambiguous if 0 or ≥2 match) or --lines a-b (1-indexed,
+// inclusive, over the BODY after frontmatter; a bare "a" means a-a). The core is trimmed of blank
+// borders (they stay in the recipe, never the brick — the rule blockCore encodes for a byte-
+// identical round trip). A span inside a code fence is swapped with the F-33 bang (include!:), the
+// only form the engine expands there; the directive keeps the span's first-line indent (compose
+// inlines b.trim(), so indent-on-directive + verbatim-brick is the pair that round-trips).
+//
+// Brick collision (approved decision — no --force): a pre-existing brick with a byte-identical BODY
+// is REUSED (idempotent — the include just gains a consumer); a divergent one is REFUSED (never
+// clobber a user's brick). fm is advisory (dropped at build), so identity is judged on body alone.
+export function promote(skill, { root = process.cwd(), to, heading, lines: lineSpec, keep = false } = {}) {
+  const bad = unsafeName(skill);
+  if (bad) return { ok: false, msg: bad };
+  const P = paths(root);
+  // Fail CLOSED before touching disk — same pre-flight posture as remove/rename/restore/gc.
+  const vErr = minVersionError(P.cfg);
+  if (vErr) return { ok: false, msg: vErr };
+  const overlap = roleOverlapError(root, P.cfg);
+  if (overlap) return { ok: false, msg: overlap };
+  const toBad = unsafeBrickPath(P, to);
+  if (toBad) return { ok: false, msg: toBad };
+  // Canonicalize the (now-validated) brick path so the directive, the file path, the ref-count key
+  // and the message all use ONE clean form — a `core\deploy` (Windows) or `./core/deploy` never
+  // leaks a backslash or a `./` into the emitted include or the on-disk name.
+  to = posix.normalize(to.replace(/\\/g, "/"));
+  const hasHeading = heading !== undefined && heading !== null;
+  const hasLines = lineSpec !== undefined && lineSpec !== null;
+  if (hasHeading === hasLines) return { ok: false, msg: `promote: pass exactly one selector — --heading "### X" OR --lines a-b` };
+
+  const recipePath = join(P.recipes, skill + ".md");
+  if (!existsSync(recipePath)) return { ok: false, msg: `skill not found: ${skill}` };
+  // Read as BYTES once, then decode. promote is the one command that REWRITES the recipe from a
+  // decoded-then-reencoded string, so a recipe Node's utf8 decoder can't round-trip would be
+  // CORRUPTED on write — and the byte-identity gate can't catch it (compose reads utf8 just as
+  // lossily, so before === after despite the on-disk damage; cross-vendor review HIGH). Refuse both
+  // an invalid-UTF-8 recipe (a lone 0xE9 → U+FFFD → written back as EF BF BD) and a BOM'd one
+  // (splitFm's `^---` anchor would miss the frontmatter and mis-target the line splice). Guarding
+  // here also makes the string-based revert below byte-exact: a clean round-trip == the real bytes.
+  const recipeBytes = readFileSync(recipePath);
+  const rawOriginal = recipeBytes.toString("utf8"); // verbatim (validated below) bytes for a faithful revert
+  if (rawOriginal.charCodeAt(0) === 0xFEFF)
+    return { ok: false, msg: `promote: ${skill}'s recipe starts with a UTF-8 BOM — re-import it (\`forge import\` strips the BOM) or remove the BOM, then promote` };
+  if (!recipeBytes.equals(Buffer.from(rawOriginal, "utf8")))
+    return { ok: false, msg: `promote: ${skill}'s recipe is not valid UTF-8 — promote would corrupt the byte(s) it cannot round-trip; fix the file's encoding first` };
+  const { fm, body } = splitFm(rawOriginal.replace(/\r\n?/g, "\n"));
+  const seg = segmentBlocks(body);
+
+  // Resolve the selector → a core { coreStart, coreEnd, text } over seg.lines.
+  let core, selectorLabel;
+  if (hasHeading) {
+    const want = heading.trim();
+    const matches = seg.blocks.filter((b) => b.heading !== null && b.heading.trim() === want);
+    if (matches.length === 0) return { ok: false, msg: `promote: no heading matches "${heading}" in ${skill} (compare the exact heading line, e.g. "### X")` };
+    if (matches.length > 1) return { ok: false, msg: `promote: heading "${heading}" is ambiguous (${matches.length} sections match) in ${skill} — use --lines a-b to disambiguate` };
+    core = blockCore(seg.lines, matches[0].start, matches[0].end);
+    selectorLabel = `[${want}]`;
+  } else {
+    const m = /^(\d+)(?:-(\d+))?$/.exec(String(lineSpec).trim());
+    if (!m) return { ok: false, msg: `promote: --lines must be "a-b" (1-indexed, inclusive) or a single "a" (got "${lineSpec}")` };
+    const a = parseInt(m[1], 10), b = m[2] !== undefined ? parseInt(m[2], 10) : a;
+    if (a < 1 || b < a || b > seg.lines.length) return { ok: false, msg: `promote: --lines ${lineSpec} out of range — the body of ${skill} has ${seg.lines.length} line(s)` };
+    core = blockCore(seg.lines, a - 1, b);
+    selectorLabel = `lines ${a}-${b}`;
+  }
+  if (!core) return { ok: false, msg: `promote: the selected span in ${skill} is blank — nothing to extract` };
+
+  // Eligibility (the rules onboard's blockEligible encodes): a {{param}} would become a required
+  // recipe param, and any include-family directive (real, or documented inside a fence) loses its
+  // fence context in the brick body — where the nested-include gate would then reject it. The
+  // include check uses the BROADER RESIDUAL_INCLUDE_RE (opener detection), not just INCLUDE, so a
+  // future directive shape (`include-v2:`) is refused UP FRONT per SPEC — not caught late by the
+  // F-40 gate after a write/revert cycle (cross-vendor review MED).
+  PLACEHOLDER_RE.lastIndex = 0;
+  if (PLACEHOLDER_RE.test(core.text)) return { ok: false, msg: `promote: the selection contains a {{param}} — extracting it would make that a required param of ${skill} (promote a plain block, or wire the param by hand)` };
+  RESIDUAL_INCLUDE_RE.lastIndex = 0;
+  if (RESIDUAL_INCLUDE_RE.test(core.text)) return { ok: false, msg: `promote: the selection contains an include-family directive — a brick must not include a brick (inline it, or include both from the recipe)` };
+
+  const fenced = seg.isFenced(seg.offsets[core.coreStart]);
+  const indent = /^[ \t]*/.exec(seg.lines[core.coreStart])[0];
+  const directive = `${indent}<!-- include${fenced ? "!" : ""}: ${to} -->`;
+
+  // Brick collision policy — reuse an identical brick, refuse a divergent one (see header note).
+  const brickPath = join(P.bricks, to + ".md");
+  let brickCreated = false;
+  if (existsSync(brickPath)) {
+    let dir = false; try { dir = statSync(brickPath).isDirectory(); } catch {}
+    if (dir) return { ok: false, msg: `promote: a directory occupies ${P.cfg.bricks}/${to}.md — choose a different --to` };
+    const existingBody = splitFm(readFileSync(brickPath, "utf8").replace(/\r\n?/g, "\n")).body;
+    if (existingBody !== core.text + "\n" && existingBody !== core.text)
+      return { ok: false, msg: `promote: brick already exists with different content: ${P.cfg.bricks}/${to}.md — choose a different --to (promote never overwrites a brick)` };
+    // identical body → reuse it, don't rewrite
+  }
+
+  // The authoritative "before": compose the skill exactly as build would, right now. A skill that
+  // does not already build cleanly has no trustworthy baseline to gate against — refuse before
+  // touching anything (its own blocking error surfaces so the user knows what to fix first).
+  const beforeErrors = [];
+  const before = compose(skill, P.cfg, root, beforeErrors, []);
+  const beforeBlocking = beforeErrors.find((e) => e.kind === "build" || e.kind === "conformance");
+  if (beforeBlocking) return { ok: false, msg: `promote: ${skill} does not build cleanly — fix it before promoting (${beforeBlocking.msg})`, errors: beforeErrors };
+
+  // Mutate: write the brick (unless reusing an identical one), then splice the recipe body. The
+  // brick is written BEFORE the recipe loses the span, so an interruption never loses content (the
+  // orphan brick is gc-able). Exclusive `wx` create + try/catch: a file/dir in the way, or a brick
+  // that appeared concurrently after the existsSync check, is a clean structured error — never a
+  // raw EEXIST/ENOTDIR crash, and never an overwrite of a brick this process didn't create
+  // (cross-vendor review). This returns before the recipe is touched, so there is nothing to revert.
+  if (!existsSync(brickPath)) {
+    try {
+      mkdirSync(dirname(brickPath), { recursive: true });
+      writeFileSync(brickPath, `---\npiece: ${basename(to)}\nsummary: TODO — describe this brick (promoted from ${skill})${keep ? "\nkeep: true" : ""}\n---\n${core.text}\n`, { flag: "wx" });
+    } catch (e) {
+      return { ok: false, msg: `promote: cannot create brick ${P.cfg.bricks}/${to}.md (${e.code ?? e.message}) — a file or directory may be in the way, or it was created concurrently` };
+    }
+    brickCreated = true;
+  }
+  const newLines = seg.lines.slice();
+  newLines.splice(core.coreStart, core.coreEnd - core.coreStart, directive);
+  const newBody = newLines.join("\n");
+  writeFileSync(recipePath, fm === null ? newBody : `---\n${fm}${fm ? "\n" : ""}---\n${newBody}`);
+
+  // Gate: recompose and demand byte-identity with the snapshot. Any mismatch — or a fresh build
+  // error the swap introduced — reverts EVERYTHING: recipe to its verbatim bytes, and the brick
+  // WE created deleted (a reused pre-existing brick is the user's, never touched).
+  const afterErrors = [];
+  const after = compose(skill, P.cfg, root, afterErrors, []);
+  const afterBlocking = afterErrors.find((e) => e.kind === "build" || e.kind === "conformance");
+  if (afterBlocking || after !== before) {
+    writeFileSync(recipePath, rawOriginal);
+    if (brickCreated) { rmSync(brickPath, { force: true }); pruneEmptyDirs(dirname(brickPath), P.bricks); }
+    const why = afterBlocking ? afterBlocking.msg : `the composed output would change${firstDiffSuffix(before, after)}`;
+    return { ok: false, reverted: true, brick: to, consumer: skill, msg: `promote reverted: extracting that span from ${skill} would not round-trip (${why}). Nothing changed.`, errors: afterBlocking ? afterErrors : [] };
+  }
+
+  // Success. The output is byte-identical, so the follow-up build only heals prior drift / writes
+  // the new state where a destination needed it — parity with create/rename/remove's post-action
+  // build (and it can never regress this skill's output, the gate just proved that).
+  const r = run({ root, mode: "build" });
+  const key = posix.normalize(to.replace(/\\/g, "/"));
+  const refCount = brickConsumers(root, P.cfg)[key]?.size ?? 1;
+  // --keep on a REUSED brick is a no-op the user must know about: we never mutate an existing
+  // brick, so the pin they asked for was NOT applied — warn (a silent no-op could leave them
+  // believing a brick is protected when a later `gc`/`remove --hard` can still sweep it).
+  const warnings = [...(r.warnings || [])];
+  if (keep && !brickCreated) warnings.push(`warning: [${skill}] --keep had no effect — reused the existing brick ${P.cfg.bricks}/${to}.md (left untouched); add \`keep: true\` to its frontmatter by hand to pin it`);
+  // The pin is only claimed when we actually WROTE the brick with `keep: true` — reusing an
+  // existing (possibly unpinned) brick must never report a pin we didn't apply.
+  const actionMsg = `promoted ${skill} ${selectorLabel} → ${P.cfg.bricks}/${to}.md ` +
+    `(${brickCreated ? "new brick" : "reused existing brick"}, ${refCount} consumer${refCount === 1 ? "" : "s"}${keep && brickCreated ? ", pinned (keep)" : ""}). Build byte-identical.`;
+  return { ok: r.ok, command: { ok: true, msg: actionMsg }, build: r, brick: to, consumer: skill, created: brickCreated, refCount, reverted: false, errors: r.errors, warnings, msg: composeMsg(actionMsg, r) };
 }

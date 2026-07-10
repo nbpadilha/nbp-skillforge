@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { run, expand } from "../src/compose.mjs";
-import { create, remove, restore, gc, rename, init, list, importFile } from "../src/lifecycle.mjs";
+import { create, remove, restore, gc, rename, init, list, importFile, promote } from "../src/lifecycle.mjs";
 import { onboard, installSkill } from "../src/onboard.mjs";
 import { installHooks } from "../src/hooks.mjs";
 
@@ -17,6 +17,7 @@ const HELP = {
   new:     "new <skill> [--description <text>] [--root <dir>]  scaffold a new recipe, then build",
   import:  "import <file> [--name <n>] [--force] [--root <dir>]  onboard an existing SKILL.md/command as a recipe",
   onboard: "onboard [--apply] [--factor] [--variants] [--from <dir>] [--install-skill] [--json] [--root <dir>]  migrate the existing skills of the out dir into recipes (dry-run by default; --apply snapshots, imports, builds and gates; --factor also extracts byte-identical shared blocks as bricks; --variants (requires --factor) also materializes each near-duplicate group as a named variant family — onboarded/<slug>_NN, every version kept verbatim, unify into one {{param}} brick in Fase B; --install-skill materializes the forge-onboard agent skill for the assisted Fase B)",
+  promote: "promote <recipe> --to <brick-path> (--heading \"### X\" | --lines a-b) [--keep] [--json] [--root <dir>]  extract a section of ONE recipe into a reusable brick + include — build byte-identical or it all reverts",
   rename:  "rename <old> <new> [--root <dir>]    rename a skill (regenerate, drop the stale output)",
   remove:  "remove <skill> [--hard] [--root <dir>]   soft-delete (→ _archive) the recipe + exclusive bricks",
   restore: "restore <skill> [--root <dir>]       bring a removed skill (and its bricks) back",
@@ -28,12 +29,12 @@ function usage(cmd) {
   if (cmd && HELP[cmd]) { console.log("nbp-skillforge " + HELP[cmd]); return; }
   console.log("nbp-skillforge — compose portable agent skills from reusable bricks, with a drift-gate.\n");
   console.log("usage: nbp-skillforge <command> [options]   (docs/tables abbreviate this as `forge`)\n");
-  for (const k of ["build", "check", "init", "list", "expand", "new", "import", "onboard", "rename", "remove", "restore", "gc", "install-hooks", "help"]) console.log("  " + HELP[k]);
+  for (const k of ["build", "check", "init", "list", "expand", "new", "import", "onboard", "promote", "rename", "remove", "restore", "gc", "install-hooks", "help"]) console.log("  " + HELP[k]);
   console.log("\nPaths/options come from forge.config.json at the root (see SPEC.md).");
   // The --json roster and the pointer must match reality: onboard is a full --json citizen (the
   // finishJson path + jsonErr guard both include it), and the shape reference lives in SPEC.md —
   // README has no "JSON output" section (it deliberately defers config/JSON docs to the SPEC).
-  console.log("--json (build/check/list/gc/onboard/expand only): print ONLY the machine-readable result (JSON.stringify(result, null, 2)) — no decorated lines. Exit code unchanged. See SPEC.md's \"JSON output (--json)\" section for the shape.");
+  console.log("--json (build/check/list/gc/onboard/expand/promote only): print ONLY the machine-readable result (JSON.stringify(result, null, 2)) — no decorated lines. Exit code unchanged. See SPEC.md's \"JSON output (--json)\" section for the shape.");
 }
 
 const argv = process.argv.slice(2);
@@ -48,7 +49,7 @@ const die = (msg) => { console.error("✗ " + msg); process.exit(2); };
 // malformed invocation.
 const SHORT_FLAGS = new Set(["-h", "-v"]);
 const value = (a, i) => { const v = argv[i]; if (v === undefined || v.startsWith("--") || SHORT_FLAGS.has(v)) die(`${a} requires a value`); return v; };
-let root = process.cwd(), hard = false, apply = false, force = false, name, description, from, factor = false, variants = false, installSkillFlag = false, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false, wantJson = false, unknownFlag = null, paramsRaw;
+let root = process.cwd(), hard = false, apply = false, force = false, name, description, from, factor = false, variants = false, installSkillFlag = false, wantHelp = false, wantVersion = false, dryRun = false, noHooks = false, wantJson = false, unknownFlag = null, paramsRaw, to, heading, lineSpec, keep = false;
 const pos = [];
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i];
@@ -57,6 +58,10 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--name") name = value(a, ++i);
   else if (a === "--description") description = value(a, ++i);
   else if (a === "--params") paramsRaw = value(a, ++i);
+  else if (a === "--to") to = value(a, ++i);
+  else if (a === "--heading") heading = value(a, ++i);
+  else if (a === "--lines") lineSpec = value(a, ++i);
+  else if (a === "--keep") keep = true;
   else if (a === "--hard") hard = true;
   else if (a === "--apply") apply = true;
   else if (a === "--force") force = true;
@@ -85,7 +90,7 @@ if (wantVersion) {
 }
 if (wantHelp) { usage(pos[0]); process.exit(0); }
 if (unknownFlag) { // only now — --help/--version already won
-  if (wantJson && ["build", "check", "list", "gc", "onboard", "expand"].includes(cmd)) jsonErr(`unknown option: ${unknownFlag}`, 2);
+  if (wantJson && ["build", "check", "list", "gc", "onboard", "expand", "promote"].includes(cmd)) jsonErr(`unknown option: ${unknownFlag}`, 2);
   die(`unknown option: ${unknownFlag}`);
 }
 
@@ -201,6 +206,15 @@ switch (cmd) {
     break;
   }
   case "install-hooks": finish(installHooks({ root, force })); break;
+  case "promote": {
+    // A --json citizen (unlike the other mutators): the Fase B forge-onboard agent drives promote
+    // programmatically, so it needs the machine-readable result. Same shape rule as onboard.
+    if (!pos[1]) { if (wantJson) jsonErr(`usage: ${HELP.promote}`, 2); finish({ ok: false, msg: `usage: ${HELP.promote}` }); }
+    const r = promote(pos[1], { root, to, heading, lines: lineSpec, keep });
+    if (wantJson) finishJson(r);
+    finish(r);
+    break;
+  }
   case "rename":  if (!pos[1] || !pos[2]) finish({ ok: false, msg: `usage: ${HELP.rename}` }); finish(rename(pos[1], pos[2], { root })); break;
   case "help":
     // `help <unknown-topic>` used to fall through to the GENERAL help with exit 0 — success-shaped
@@ -213,7 +227,7 @@ switch (cmd) {
 }
 } catch (e) {
   if (!e?.userFacing) throw e; // unexpected/programming error → preserve the stack trace, crash loudly
-  if (wantJson && ["build", "check", "list", "gc", "onboard", "expand"].includes(cmd)) jsonErr(e.message, 1); // parseable error for --json consumers
+  if (wantJson && ["build", "check", "list", "gc", "onboard", "expand", "promote"].includes(cmd)) jsonErr(e.message, 1); // parseable error for --json consumers
   console.error("✗ " + e.message);
   process.exit(1);
 }

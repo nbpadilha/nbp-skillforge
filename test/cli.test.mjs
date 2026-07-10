@@ -29,8 +29,9 @@ test("help exits 0 and lists commands", () => {
   // Release-readiness fix (2026-07-07): the --json footer must list EVERY --json citizen
   // (onboard was missing) and point at the section that actually exists — SPEC.md's
   // "JSON output (--json)" (the README has no such section).
-  assert.match(out, /--json \(build\/check\/list\/gc\/onboard\/expand only\)/, "onboard and expand are full --json citizens");
+  assert.match(out, /--json \(build\/check\/list\/gc\/onboard\/expand\/promote only\)/, "onboard, expand and promote are full --json citizens");
   assert.match(out, /^  expand <name>/m, "expand is listed in the command roster");
+  assert.match(out, /^  promote <recipe> --to/m, "promote is listed in the command roster");
   assert.match(out, /SPEC\.md's "JSON output \(--json\)" section/, "shape reference points at SPEC.md");
   assert.doesNotMatch(out, /README's "JSON output"/, "no pointer to a README section that does not exist");
 });
