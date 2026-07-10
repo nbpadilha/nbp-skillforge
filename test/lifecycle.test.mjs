@@ -4,9 +4,9 @@ import assert from "node:assert/strict";
 import { execSync } from "node:child_process";
 import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { create, remove, restore, gc, rename, init, list, importFile } from "../src/lifecycle.mjs";
+import { create, remove, restore, gc, rename, init, list, importFile, promote } from "../src/lifecycle.mjs";
 import { run } from "../src/compose.mjs";
-import { makeRoot, bareRoot, write, read, has, recipe, brick, outFile, archived, cleanup } from "./helpers.mjs";
+import { makeRoot, bareRoot, write, read, readRaw, has, recipe, brick, outFile, archived, cleanup } from "./helpers.mjs";
 
 test("new: scaffolds a recipe and builds without error", () => {
   const root = makeRoot({});
@@ -1490,5 +1490,256 @@ test("HIGH A/B follow-up: restore never moves a directory named *.md out of the 
     // cleanup is restore's documented contract; the guard here is only about never MOVING a
     // non-file into bricks/ (or counting it as a conflict).
     assert.equal(has(archived(root, "solo")), false, "archive entry consumed as usual");
+  } finally { cleanup(root); }
+});
+
+// ── F-36: promote (recipe → brick, byte-identical or it all reverts) ─────────────────────────
+// conformance:false keeps the fixtures terse (arbitrary skill/section text) — promote's own logic
+// is orthogonal to the SKILL.md name gate, which has its own coverage above.
+const promoteRoot = (recipes, bricks = {}) => makeRoot({ config: { conformance: false }, recipes, bricks });
+
+test("promote --heading: brick born, recipe gets the include, output byte-identical + drift green", () => {
+  const root = promoteRoot({ alpha: "---\nname: alpha\ndescription: d\n---\n# alpha\n\nIntro.\n\n## Shared\n\nThis is a shared block.\nSecond line.\n\n## Tail\n\nEnd.\n" });
+  try {
+    assert.equal(run({ root, mode: "build" }).ok, true);
+    const before = read(outFile(root, "alpha"));
+    const r = promote("alpha", { root, to: "shared", heading: "## Shared" });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.created, true);
+    assert.equal(r.brick, "shared");
+    assert.equal(r.refCount, 1);
+    assert.equal(has(brick(root, "shared")), true, "brick file created");
+    const rec = read(recipe(root, "alpha"));
+    assert.match(rec, /<!-- include: shared -->/, "recipe carries a plain include");
+    assert.doesNotMatch(rec, /This is a shared block/, "the section text left the recipe");
+    assert.equal(read(outFile(root, "alpha")), before, "output is BYTE-IDENTICAL after promote");
+    assert.equal(run({ root, mode: "check" }).ok, true, "drift-gate stays green");
+    assert.match(read(brick(root, "shared")), /## Shared[\s\S]*Second line\./, "brick holds the whole heading-section");
+    assert.match(read(brick(root, "shared")), /^piece: shared$/m, "brick fm names the piece");
+  } finally { cleanup(root); }
+});
+
+test("promote --lines a-b (1-indexed, inclusive over body): byte-identical, blank borders stay in the recipe", () => {
+  // body lines: 1:# beta 2:'' 3:keep me 4:'' 5:block a 6:block b 7:block c 8:'' 9:tail
+  const root = promoteRoot({ beta: "---\nname: beta\ndescription: d\n---\n# beta\n\nkeep me\n\nblock a\nblock b\nblock c\n\ntail\n" });
+  try {
+    run({ root, mode: "build" });
+    const before = read(outFile(root, "beta"));
+    const r = promote("beta", { root, to: "abc", lines: "5-7" });
+    assert.equal(r.ok, true, r.msg);
+    assert.match(read(recipe(root, "beta")), /<!-- include: abc -->/);
+    assert.equal(read(outFile(root, "beta")), before, "byte-identical");
+    assert.equal(read(brick(root, "abc")), "---\npiece: abc\nsummary: TODO — describe this brick (promoted from beta)\n---\nblock a\nblock b\nblock c\n");
+  } finally { cleanup(root); }
+});
+
+test("promote: a span INSIDE a code fence is swapped with the F-33 bang (include!:), round-trip byte-identical", () => {
+  // fenced inner content: body line 7 'prompt 1', 8 'prompt 2'
+  const root = promoteRoot({ gamma: "---\nname: gamma\ndescription: d\n---\n# gamma\n\nBefore.\n\n```\nprompt 1\nprompt 2\n```\n\nAfter.\n" });
+  try {
+    run({ root, mode: "build" });
+    const before = read(outFile(root, "gamma"));
+    const r = promote("gamma", { root, to: "prompt", lines: "7-8" });
+    assert.equal(r.ok, true, r.msg);
+    assert.match(read(recipe(root, "gamma")), /<!-- include!: prompt -->/, "fenced span uses the BANG form");
+    assert.equal(read(outFile(root, "gamma")), before, "fenced round-trip byte-identical");
+  } finally { cleanup(root); }
+});
+
+test("promote: multi-line indent is preserved on the directive (compose inlines b.trim())", () => {
+  // body: 3:'- list:' 4:'    nested a' 5:'    nested b'
+  const root = promoteRoot({ delta: "---\nname: delta\ndescription: d\n---\n# delta\n\n- list:\n    nested a\n    nested b\n\nend\n" });
+  try {
+    run({ root, mode: "build" });
+    const before = read(outFile(root, "delta"));
+    const r = promote("delta", { root, to: "nested", lines: "4-5" });
+    assert.equal(r.ok, true, r.msg);
+    assert.match(read(recipe(root, "delta")), /\n {4}<!-- include: nested -->\n/, "directive keeps the 4-space indent");
+    assert.equal(read(outFile(root, "delta")), before, "indented round-trip byte-identical");
+  } finally { cleanup(root); }
+});
+
+test("promote REVERTS all-or-nothing when the extraction would not round-trip (recipe restored byte-for-byte, brick deleted)", () => {
+  // A mid-body line with trailing spaces: compose keeps them in the recipe (verbatim) but b.trim()
+  // strips them from the extracted brick body — so the round-trip diverges and everything reverts.
+  const root = promoteRoot({ eps: "---\nname: eps\ndescription: d\n---\n# eps\n\n## Sec\n\ncontent with trailing spaces   \n\n## Tail\n\nfin\n" });
+  try {
+    run({ root, mode: "build" });
+    const before = read(outFile(root, "eps"));
+    const recipeBefore = read(recipe(root, "eps"));
+    const r = promote("eps", { root, to: "sec", heading: "## Sec" });
+    assert.equal(r.ok, false);
+    assert.equal(r.reverted, true);
+    assert.match(r.msg, /would not round-trip/);
+    assert.equal(read(recipe(root, "eps")), recipeBefore, "recipe restored byte-for-byte");
+    assert.equal(has(brick(root, "sec")), false, "the just-created brick is deleted on revert");
+    assert.equal(read(outFile(root, "eps")), before, "output untouched");
+  } finally { cleanup(root); }
+});
+
+test("promote guards: {{param}}, include-like, --to traversal, missing recipe, ambiguous heading, selector arity", () => {
+  const root = promoteRoot({
+    zeta: "---\nname: zeta\ndescription: d\n---\n# zeta\n\n## Param\n\nuse {{key}} here\nmore\n\n## Inc\n\n<!-- include: other -->\ntext\n\n## Plain\n\njust text\nand more\n",
+    dup: "---\nname: dup\ndescription: d\n---\n# dup\n\n## Same\n\nalpha\nbeta\n\n## Same\n\ngamma\ndelta\n",
+  }, { other: "hi\n" });
+  try {
+    run({ root, mode: "build" });
+    assert.equal(promote("zeta", { root, to: "p", heading: "## Param" }).ok, false, "{{param}} in section refused");
+    assert.equal(promote("zeta", { root, to: "i", heading: "## Inc" }).ok, false, "include in section refused");
+    assert.equal(promote("zeta", { root, to: "../escape", heading: "## Plain" }).ok, false, "--to traversal refused");
+    assert.equal(has(brick(root, "../escape")), false);
+    assert.equal(promote("nope", { root, to: "x", heading: "## Plain" }).ok, false, "missing recipe refused");
+    assert.equal(promote("zeta", { root, to: "x", heading: "## Nope" }).ok, false, "no-match heading refused");
+    assert.equal(promote("zeta", { root, to: "x", heading: "## Plain", lines: "1-2" }).ok, false, "two selectors refused");
+    assert.equal(promote("zeta", { root, to: "x" }).ok, false, "no selector refused");
+    assert.equal(promote("dup", { root, to: "x", heading: "## Same" }).ok, false, "ambiguous heading refused");
+    // Not one guard leaked a brick or mutated a recipe.
+    assert.equal(read(recipe(root, "zeta")), "---\nname: zeta\ndescription: d\n---\n# zeta\n\n## Param\n\nuse {{key}} here\nmore\n\n## Inc\n\n<!-- include: other -->\ntext\n\n## Plain\n\njust text\nand more\n", "recipe untouched by any refused promote");
+  } finally { cleanup(root); }
+});
+
+test("promote --keep: brick is born pinned (keep: true) and survives gc --apply --hard", () => {
+  const root = promoteRoot({ k1: "---\nname: k1\ndescription: d\n---\n# k1\n\n## Pinned\n\nbody\nmore\n" });
+  try {
+    run({ root, mode: "build" });
+    const r = promote("k1", { root, to: "pinned", heading: "## Pinned", keep: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.match(read(brick(root, "pinned")), /^keep: true$/m, "brick carries keep: true");
+    assert.match(r.msg, /pinned \(keep\)/);
+    // The brick has 1 consumer so it is not even an orphan; remove the consumer, then gc must
+    // still keep it (pinned). Simplest: it is consumed, so gc reports no orphans — assert the pin
+    // holds by removing the recipe's include and running a hard gc.
+    write(recipe(root, "k1"), "---\nname: k1\ndescription: d\n---\n# k1\n\nno include now\n");
+    const g = gc(root, { apply: true, hard: true });
+    assert.equal(has(brick(root, "pinned")), true, "pinned orphan survives gc --apply --hard");
+    assert.ok(g.pinned.includes("pinned"), "gc reports it as pinned");
+  } finally { cleanup(root); }
+});
+
+test("promote: a divergent existing brick is refused; a byte-identical one is REUSED (idempotent, ref-count grows)", () => {
+  const root = promoteRoot({
+    s1: "---\nname: s1\ndescription: d\n---\n# s1\n\n## Common\n\nshared body\ntwo\n",
+    s2: "---\nname: s2\ndescription: d\n---\n# s2\n\n## Common\n\nshared body\ntwo\n",
+  });
+  try {
+    run({ root, mode: "build" });
+    const r1 = promote("s1", { root, to: "common", heading: "## Common" });
+    assert.equal(r1.ok, true, r1.msg);
+    assert.equal(r1.created, true);
+    assert.equal(r1.refCount, 1);
+    const r2 = promote("s2", { root, to: "common", heading: "## Common" });
+    assert.equal(r2.ok, true, r2.msg);
+    assert.equal(r2.created, false, "identical section reuses the brick, never rewrites it");
+    assert.equal(r2.refCount, 2, "the reused brick now has two consumers");
+    const l = list(root);
+    assert.equal(l.bricks.find((b) => b.brick === "common").refCount, 2, "list shows ref-count 2");
+  } finally { cleanup(root); }
+});
+
+test("promote: refuses to overwrite an existing brick whose body differs (no --force)", () => {
+  const root = promoteRoot({ d1: "---\nname: d1\ndescription: d\n---\n# d1\n\n## X\n\nbody here\ntwo\n" },
+    { occupied: "---\npiece: occupied\n---\nDIFFERENT content\n" });
+  try {
+    run({ root, mode: "build" });
+    const r = promote("d1", { root, to: "occupied", heading: "## X" });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /already exists with different content/);
+    assert.match(read(brick(root, "occupied")), /DIFFERENT content/, "the user's brick is untouched");
+    assert.doesNotMatch(read(recipe(root, "d1")), /include/, "recipe not mutated on refusal");
+  } finally { cleanup(root); }
+});
+
+// ── F-36 cross-vendor review regressions (codex + agy, adjudicated by execution) ─────────────
+test("promote regression: a recipe that is not valid UTF-8 is refused, its bytes untouched (no U+FFFD corruption)", () => {
+  // HIGH (codex): promote rewrites the recipe from a utf8-decoded string; a lone 0xE9 would be read
+  // as U+FFFD and written back as EF BF BD — and the byte-identity gate can't see it (compose reads
+  // utf8 just as lossily). Refuse up front; the byte guard also makes the string-based revert exact.
+  const root = promoteRoot({});
+  try {
+    const buf = Buffer.concat([Buffer.from("---\nname: u\ndescription: d\n---\n# u\n\ncaf"), Buffer.from([0xe9]), Buffer.from("\n\n## Sec\n\nbody\ntwo\n")]);
+    write(recipe(root, "u"), buf);
+    const before = readRaw(recipe(root, "u"));
+    const r = promote("u", { root, to: "sec", heading: "## Sec" });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /not valid UTF-8/);
+    assert.ok(readRaw(recipe(root, "u")).equals(before), "recipe bytes untouched");
+  } finally { cleanup(root); }
+});
+
+test("promote regression: a BOM'd recipe is refused (splitFm would mis-anchor and mis-splice)", () => {
+  const root = promoteRoot({ b: "﻿---\nname: b\ndescription: d\n---\n# b\n\n## Sec\n\nbody\ntwo\n" });
+  try {
+    const r = promote("b", { root, to: "sec", heading: "## Sec" });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /BOM/);
+  } finally { cleanup(root); }
+});
+
+test("promote regression: a symlinked bricks/ subdir pointing OUTSIDE the tree is refused (write-through blocked)", (t) => {
+  const root = promoteRoot({ s: "---\nname: s\ndescription: d\n---\n# s\n\n## Sec\n\nbody\ntwo\n" });
+  try {
+    const external = join(root, "outside");
+    write(join(external, ".keep"), "x");
+    mkdirSync(join(root, "bricks"), { recursive: true }); // makeRoot skips bricks/ when there are no brick fixtures
+    try { linkDirInto(join(root, "bricks"), "ext", external); }
+    catch { return t.skip("symlink/junction not permitted in this environment"); }
+    run({ root, mode: "build" });
+    const r = promote("s", { root, to: "ext/evil", heading: "## Sec" });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /escapes/);
+    assert.equal(has(join(external, "evil.md")), false, "nothing written outside the tree through the link");
+  } finally { cleanup(root); }
+});
+
+test("promote regression: a future include-family shape (include-v2:) in the span is refused up front", () => {
+  const root = promoteRoot({ v: "---\nname: v\ndescription: d\n---\n# v\n\n## Sec\n\n<!-- include-v2: foo -->\nbody\n" });
+  try {
+    run({ root, mode: "build" });
+    const r = promote("v", { root, to: "sec", heading: "## Sec" });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /include-family/);
+    assert.equal(has(brick(root, "sec")), false, "no brick written");
+  } finally { cleanup(root); }
+});
+
+test("promote regression: a regular file in the way of a nested brick dir is a clean error, not a raw crash", () => {
+  const root = promoteRoot({ c: "---\nname: c\ndescription: d\n---\n# c\n\n## Sec\n\nbody\ntwo\n" });
+  try {
+    write(join(root, "bricks", "conflict"), "i am a file"); // a FILE at bricks/conflict (no .md) blocks the nested dir
+    run({ root, mode: "build" });
+    let threw = false, r;
+    try { r = promote("c", { root, to: "conflict/brick", heading: "## Sec" }); } catch { threw = true; }
+    assert.equal(threw, false, "must not throw a raw ENOTDIR/EEXIST");
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /cannot create brick/);
+    assert.doesNotMatch(read(recipe(root, "c")), /include/, "recipe not mutated");
+  } finally { cleanup(root); }
+});
+
+test("promote regression: --to a/../b is refused (a `..` segment is never silently normalized away)", () => {
+  const root = promoteRoot({ t: "---\nname: t\ndescription: d\n---\n# t\n\n## Sec\n\nbody\ntwo\n" });
+  try {
+    run({ root, mode: "build" });
+    const r = promote("t", { root, to: "a/../b", heading: "## Sec" });
+    assert.equal(r.ok, false);
+    assert.match(r.msg, /invalid --to/);
+    assert.equal(has(brick(root, "b")), false, "no bricks/b.md written");
+  } finally { cleanup(root); }
+});
+
+test("promote regression: --keep on a REUSED unpinned brick warns and never mutates the brick (no silent no-op)", () => {
+  const root = promoteRoot({
+    k1: "---\nname: k1\ndescription: d\n---\n# k1\n\n## Common\n\nshared\ntwo\n",
+    k2: "---\nname: k2\ndescription: d\n---\n# k2\n\n## Common\n\nshared\ntwo\n",
+  });
+  try {
+    run({ root, mode: "build" });
+    promote("k1", { root, to: "common", heading: "## Common" }); // creates an UNpinned brick
+    const r = promote("k2", { root, to: "common", heading: "## Common", keep: true });
+    assert.equal(r.ok, true, r.msg);
+    assert.equal(r.created, false, "reused");
+    assert.ok((r.warnings || []).some((w) => /--keep had no effect/.test(w)), "warns the pin was not applied");
+    assert.doesNotMatch(r.msg, /pinned \(keep\)/, "does not falsely claim a pin");
+    assert.doesNotMatch(read(brick(root, "common")), /keep:\s*true/, "existing brick left untouched");
   } finally { cleanup(root); }
 });

@@ -194,16 +194,17 @@ Optional; every field falls back to the default below when the file is absent or
   version-pair-agnostic defense. Default `null` (no pin).
 
 ## JSON output (`--json`)
-`forge build`/`check`/`list`/`gc`/`onboard`/`expand` accept `--json`: stdout becomes **only**
+`forge build`/`check`/`list`/`gc`/`onboard`/`expand`/`promote` accept `--json`: stdout becomes **only**
 `JSON.stringify(result, null, 2)` — no `✔`/`✗`/`  • ` decorated lines — for scripting/CI. The exit
 code is unchanged (`0` on success, `1`/`2` on failure). Error paths are covered: an invalid
 `forge.config.json` or an unknown flag on one of these commands prints
 `{ "ok": false, "error": "..." }` on stdout. A build/check result refused by a **config error**
 (role overlap, missing recipes dir) still carries the **full** result shape below — every
 aggregate field present and zeroed, `plan: []` on build — so a consumer never branches on a
-field's absence. Lifecycle commands that mutate the tree
+field's absence. Most lifecycle commands that mutate the tree
 (`new`/`import`/`remove`/`restore`/`rename`) are **out of scope** for `--json` today; the flag is
-accepted but has no effect on their output.
+accepted but has no effect on their output. **`promote` is the exception** — it is a full `--json`
+citizen (the Fase B onboarding agent drives it programmatically), see its row below.
 
 | Command | Result shape (`JSON.parse`-able) |
 |---|---|
@@ -214,6 +215,7 @@ accepted but has no effect on their output.
 | `onboard` (dry-run) | `{ ok, applied: false, root, entries, msg }` — `entries` is one object per scanned file with its disposition (`status`, `reason`, optional `proposal`); entries also carry internal scan fields beyond the disposition (informative, not contractual). |
 | `onboard --apply` | `{ ok, applied, root, entries, backupDir, gate, enforced, factoring, warnings, msg }` — `gate` is the per-skill fidelity verdict; `factoring` is `{ factored, kept, nearDups, variants }` (present only with `--factor`); `enforced` is `true` when the run auto-enabled `enforceGenerated`. |
 | `expand` | `{ ok, text, mode, name, errors, warnings }` — `text` is the composed preview (recipe mode: the full generated skill; brick mode: the expanded brick body). `mode` is `"recipe"` \| `"brick"`. On a resolution failure (no such recipe/brick) `text` is absent and a `msg` names the miss. Writes nothing. |
+| `promote` | `{ ok, brick, consumer, created, refCount, reverted, msg, command, build, errors, warnings }` — `brick` is the `--to` path, `consumer` the recipe promoted from; `created` is `true` for a new brick / `false` when an identical existing one was reused; `refCount` is the brick's consumer count afterward. On a gate failure `ok:false, reverted:true` (nothing changed). `build` is the follow-up build's own result. |
 
 `errors` entries are `{ kind, skill, msg }` (`kind` ∈ `"build"` \| `"conformance"` \| `"drift"` \|
 `"orphan"` \| `"config"`); `msg` is the same full text the non-json CLI prints.
@@ -278,7 +280,26 @@ via the appended message text, not as JSON on stdout.
   with a `name:` field and `conformance` is enabled, the new name is pre-validated against the same
   gate `build` enforces **before anything is touched** — a non-conformant new name is refused up
   front (nothing deleted, moved, or rewritten); a recipe with no frontmatter is not gated.
-- `new`/`remove`/`restore`/`rename` each run a full-project build after their own action. If that
+- `promote <recipe> --to <brick-path> (--heading "### X" | --lines a-b) [--keep]` extracts a
+  section of **one** recipe into a reusable brick and replaces it in place with the matching include
+  directive — the curated, deterministic recipe→brick refactor (the proactive counterpart to
+  `onboard --factor`'s reactive dedup). Exactly **one** selector: `--heading` (preferred) matches the
+  heading-section whose heading line equals the argument after trimming (**ambiguous** — 0 or ≥2
+  matches — is refused); `--lines a-b` is a 1-indexed inclusive range over the body **after**
+  frontmatter (a bare `a` means `a-a`). The selected span is trimmed of blank border lines (they stay
+  in the recipe, never the brick) so the round trip is byte-identical. A span **inside a code fence**
+  is swapped with the bang form (`include!:`), the only directive the engine expands there; the
+  directive keeps the span's first-line indent. **All-or-nothing under a byte-identity gate:** the
+  recipe's composed output must come out **byte-identical** to before, or the whole operation reverts
+  — recipe restored verbatim, the just-created brick deleted. Refused up front (nothing written) if
+  the span contains a `{{param}}` (would become a required recipe param) or an include-family
+  directive (a brick must not include a brick), if `--to` escapes `bricks/`, or if the skill does not
+  already build cleanly. **Brick collision:** a pre-existing brick with a byte-identical body is
+  **reused** (the include just gains a consumer); a divergent one is **refused** (never overwrites a
+  brick — there is no `--force`). `--keep` seeds `keep: true` in the new brick so a single-consumer
+  lego is born pinned against `gc`. The brick is born owned by exactly one skill (ref-count 1) — not
+  an orphan. A full `--json` citizen (see JSON output).
+- `new`/`remove`/`restore`/`rename`/`promote` each run a full-project build after their own action. If that
   action itself succeeds but the follow-up build then fails (e.g. an unrelated, already-broken
   recipe elsewhere in the project), the command's message says so explicitly and the same build
   error bullets `build`/`check` print are shown — it never exits 1 with an unexplained success-shaped

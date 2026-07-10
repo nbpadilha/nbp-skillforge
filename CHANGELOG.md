@@ -6,6 +6,47 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-09
+
+Flow release — the **proactive, curated** axis of factoring: promote a reusable block out of a
+single recipe *before* a second consumer exists, closing the gap that made the athena consumer
+build a parallel `BLK-*` system by hand. No breaking changes.
+
+### Added
+- **F-36 — `forge promote <recipe> --to <brick-path> (--heading "### X" | --lines a-b) [--keep]`.**
+  A curated, deterministic **recipe→brick** refactor — the proactive counterpart to
+  `onboard --factor`'s reactive, byte-identical-across-skills dedup. It extracts a section of **one**
+  recipe into a new reusable brick and replaces it in place with the matching include directive,
+  eliminating the manual copy→create→edit-include→hope-it-doesn't-drift dance.
+  - **Selector (exactly one):** `--heading "### X"` (preferred) matches the heading-section whose
+    heading line equals the argument after trimming — robust to line edits, and **ambiguous (0 or ≥2
+    matches) is refused**; `--lines a-b` is a 1-indexed inclusive range over the body **after**
+    frontmatter (a bare `a` means `a-a`). The span is trimmed of blank border lines (they stay in the
+    recipe, never the brick), the rule that keeps the round trip byte-identical.
+  - **All-or-nothing byte-identity gate:** the recipe's composed output must come out
+    **byte-identical** to before the promotion, judged the same way the drift-gate and
+    `onboard --factor` judge fidelity — or the whole operation **reverts** (recipe restored verbatim,
+    the just-created brick deleted), with the diverging line pointed out.
+  - **Fence-aware swap:** a span inside a code fence is swapped with the bang form (`include!:`), the
+    only directive the engine expands there; the directive keeps the span's first-line indent
+    (`compose` inlines the brick body `.trim()`, so indent-on-directive + verbatim-brick round-trips).
+  - **Refused up front (nothing written)** if the span holds a `{{param}}` (would become a required
+    recipe param) or an include-family directive (a brick must not include a brick), if `--to` escapes
+    `bricks/`, or if the skill doesn't already build cleanly.
+  - **Brick collision (no `--force`):** a pre-existing brick with a byte-identical body is **reused**
+    (the include just gains a consumer); a divergent one is **refused** — `promote` never overwrites a
+    brick. `--keep` seeds `keep: true` so a single-consumer lego is born pinned against `gc`.
+  - A full **`--json`** citizen (unlike the other mutators — the Fase B onboarding agent drives it
+    programmatically): `{ ok, brick, consumer, created, refCount, reverted, msg, command, build, … }`.
+  - **Migration note:** the athena `BLK-*` blocks become bricks via `promote` (the gate guarantees
+    fidelity); the hand-rolled `check-blocks.mjs` retires.
+
+### Changed
+- **Internal:** the block-segmentation primitives (`segmentBlocks` / `blockCore`) moved from
+  `onboard.mjs` down to `compose.mjs` (the shared base) so `promote` reuses the exact same
+  segmentation — no divergent reimplementation, and no `onboard`→`lifecycle` import cycle. Behavior
+  unchanged (the onboard `--factor`/`--variants` suite is byte-for-byte green).
+
 ## [0.8.1] - 2026-07-08
 
 Safety/correctness patch — three findings from the athena refactor of 19 skills (feedback lot #3,
@@ -618,7 +659,8 @@ First public release (npm).
 - **Test suite** (`node --test`, zero deps) covering the engine, lifecycle, and ref-counting.
 - Documentation: `README.md`, `SPEC.md`, `SETUP.md`, `SECURITY.md`, and a runnable [`examples/`](examples/) project.
 
-[Unreleased]: https://github.com/nbpadilha/nbp-skillforge/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/nbpadilha/nbp-skillforge/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/nbpadilha/nbp-skillforge/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/nbpadilha/nbp-skillforge/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/nbpadilha/nbp-skillforge/compare/v0.7.3...v0.8.0
 [0.7.3]: https://github.com/nbpadilha/nbp-skillforge/compare/v0.7.2...v0.7.3

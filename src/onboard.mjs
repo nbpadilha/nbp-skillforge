@@ -18,6 +18,7 @@ import { createHash } from "node:crypto"; // node builtin — the zero-runtime-d
 import {
   loadConfig, run, splitFm, fenceMasker, INCLUDE, PLACEHOLDER_RE, GENERATED_BANNER_RE,
   hasForgeRole, validateConformance, isConformantName, roleOverlapError, brickConsumers,
+  segmentBlocks, blockCore,
 } from "./compose.mjs";
 import { importFile } from "./lifecycle.mjs";
 import { CASE_INSENSITIVE_FS, canonFold, isInside } from "./paths.mjs";
@@ -217,36 +218,9 @@ export function discover(root, cfg, { from } = {}) {
 const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-{2,}/g, "-").replace(/^-|-$/g, "").slice(0, 64);
 
 // ── Fase A factoring (--factor): byte-identical blocks only, gate-verified, self-reverting ───
-// Segments a recipe BODY into heading-sections (a heading line up to — not including — the next
-// heading; plus a preamble block before the first heading). Fence-aware: a `# ...` line inside a
-// code fence is content, not a heading. Line-based; returns [{ heading, lines: [start, end) }].
-export function segmentBlocks(body) {
-  const lines = body.split("\n");
-  const isFenced = fenceMasker(body);
-  // Map each line index to its char offset so the fence mask (offset-based) applies per line.
-  const offsets = [0];
-  for (const l of lines) offsets.push(offsets[offsets.length - 1] + l.length + 1);
-  const heads = [];
-  // 0–3 leading spaces: CommonMark's ATX-heading indentation allowance — mirrors FENCE_RE.
-  for (let i = 0; i < lines.length; i++) if (/^ {0,3}#{1,6} /.test(lines[i]) && !isFenced(offsets[i])) heads.push(i);
-  const blocks = [];
-  if (heads.length === 0 || heads[0] > 0) blocks.push({ heading: null, start: 0, end: heads[0] ?? lines.length });
-  for (let h = 0; h < heads.length; h++) blocks.push({ heading: lines[heads[h]], start: heads[h], end: heads[h + 1] ?? lines.length });
-  // offsets + isFenced are exposed (additively) so the F-34 sub-block pass reuses THIS
-  // segmentation's fence mask instead of recomputing it — one mask per body, engine rules.
-  return { lines, blocks, offsets, isFenced };
-}
-
-// The CORE of a block = its lines minus leading/trailing blank lines. The core (exact bytes,
-// joined by \n) is both the dedup key and the future brick body — compose inlines `b.trim()`,
-// so keeping the surrounding blank lines in the RECIPE (never in the brick) is what makes the
-// factored round-trip byte-identical. No per-line normalization: near-identical is Fase B's job.
-function blockCore(lines, start, end) {
-  let a = start, b = end - 1;
-  while (a <= b && lines[a].trim() === "") a++;
-  while (b >= a && lines[b].trim() === "") b--;
-  return a > b ? null : { coreStart: a, coreEnd: b + 1, text: lines.slice(a, b + 1).join("\n") };
-}
+// The block-segmentation primitives (segmentBlocks / blockCore) now live in compose.mjs — the
+// shared base that lifecycle's `promote` (F-36) also consumes — and are imported at the top of
+// this file (an onboard-local copy would be an import cycle: onboard imports FROM lifecycle).
 
 const slugHead = (heading) => {
   const s = heading ? slugify(heading.replace(/^#{1,6} /, "")) : "";
